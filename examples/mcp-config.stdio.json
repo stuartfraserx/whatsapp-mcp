@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "/home/YOUR_USER/bin/whatsapp-mcp",
+      "args": ["serve", "--transport", "stdio"],
+      "env": {
+        "WHATSAPP_MCP_DATA_DIR": "/home/YOUR_USER/.local/share/whatsapp-mcp",
+        "WHATSAPP_MCP_SEND_ENABLED": "true",
+        "WHATSAPP_MCP_ALLOWLIST": ""
+      }
+    }
+  }
+}

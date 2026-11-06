@@ -678,3 +678,20 @@ func TestHTTPPortFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestSendTimeout(t *testing.T) {
+	if got := mustLoad(t, nil).SendTimeout; got != 25*time.Second {
+		t.Fatalf("default=%v", got)
+	}
+	if got := mustLoad(t, map[string]string{config.EnvSendTimeout: "40s"}).SendTimeout; got != 40*time.Second {
+		t.Fatal(got)
+	}
+	if got := mustLoad(t, map[string]string{config.EnvSendTimeout: "40s"}, "--send-timeout=5s").SendTimeout; got != 5*time.Second {
+		t.Fatal(got)
+	}
+	for _, value := range []string{"4s", "121s", "invalid"} {
+		if _, err := load(t, map[string]string{config.EnvSendTimeout: value}); err == nil {
+			t.Fatalf("accepted %s", value)
+		}
+	}
+}

@@ -29,18 +29,20 @@ const (
 )
 
 type sendMessageInput struct {
-	Recipient string `json:"recipient" jsonschema:"Recipient JID, phone number with country code, or the exact name of a contact or chat"`
-	Text      string `json:"text" jsonschema:"Message text, at most 4096 characters, not blank"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional retry deduplication key (10 minute window)"`
+	Recipient      string `json:"recipient" jsonschema:"Recipient JID, phone number with country code, or the exact name of a contact or chat"`
+	Text           string `json:"text" jsonschema:"Message text, at most 4096 characters, not blank"`
 }
 
 type sendFileInput struct {
-	Recipient string `json:"recipient" jsonschema:"Recipient JID, phone number with country code, or the exact name of a contact or chat"`
-	Path      string `json:"path" jsonschema:"Path of a regular file inside the server's outbox or download directory, at most 64 MiB"`
-	Caption   string `json:"caption,omitempty" jsonschema:"Optional caption, at most 4096 characters"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional retry deduplication key (10 minute window)"`
+	Recipient      string `json:"recipient" jsonschema:"Recipient JID, phone number with country code, or the exact name of a contact or chat"`
+	Path           string `json:"path" jsonschema:"Path of a regular file inside the server's outbox or download directory, at most 64 MiB"`
+	Caption        string `json:"caption,omitempty" jsonschema:"Optional caption, at most 4096 characters"`
 }
 
 type sendOutput struct {
-	Status     string      `json:"status" jsonschema:"sent, or ambiguous when the recipient matched several chats and nothing was sent"`
+	Status     string      `json:"status" jsonschema:"sent, unknown_maybe_sent when delivery is uncertain, or ambiguous when the recipient matched several chats"`
 	MessageID  string      `json:"message_id,omitempty"`
 	ChatJID    string      `json:"chat_jid,omitempty"`
 	Timestamp  string      `json:"timestamp,omitempty"`
@@ -56,7 +58,7 @@ func ambiguousOutput(cands []candidate) sendOutput {
 	}
 }
 
-func (h *handlers) sendMessage(ctx context.Context, _ *mcp.CallToolRequest, in sendMessageInput) (*mcp.CallToolResult, sendOutput, error) {
+func (h *handlers) sendMessageOnce(ctx context.Context, _ *mcp.CallToolRequest, in sendMessageInput) (*mcp.CallToolResult, sendOutput, error) {
 	if strings.TrimSpace(in.Text) == "" {
 		return nil, sendOutput{}, errors.New("text must not be blank")
 	}
@@ -79,12 +81,12 @@ func (h *handlers) sendMessage(ctx context.Context, _ *mcp.CallToolRequest, in s
 	sent, err := h.Client.SendText(ctx, res.JID, in.Text)
 	if err != nil {
 		h.refundIfNotSent(slot, err)
-		return nil, sendOutput{}, h.sendError(err)
+		return nil, failedSend(sent, res.JID, err), h.sendError(err)
 	}
 	return nil, h.recordSent(ctx, res.JID, sent, in.Text, nil), nil
 }
 
-func (h *handlers) sendFile(ctx context.Context, _ *mcp.CallToolRequest, in sendFileInput) (*mcp.CallToolResult, sendOutput, error) {
+func (h *handlers) sendFileOnce(ctx context.Context, _ *mcp.CallToolRequest, in sendFileInput) (*mcp.CallToolResult, sendOutput, error) {
 	if strings.TrimSpace(in.Path) == "" {
 		return nil, sendOutput{}, errors.New("path is required")
 	}
@@ -138,7 +140,7 @@ func (h *handlers) sendFile(ctx context.Context, _ *mcp.CallToolRequest, in send
 	sent, err := h.Client.SendFile(ctx, res.JID, file)
 	if err != nil {
 		h.refundIfNotSent(slot, err)
-		return nil, sendOutput{}, h.sendError(err)
+		return nil, failedSend(sent, res.JID, err), h.sendError(err)
 	}
 	media := &wa.Media{
 		Type:       wa.OutgoingMediaType(file.MimeType),
@@ -208,10 +210,19 @@ func (h *handlers) refundIfNotSent(slot ratelimit.Slot, err error) {
 }
 
 func (h *handlers) sendError(err error) error {
+	if errors.Is(err, wa.ErrMaybeSent) {
+		return wa.ErrMaybeSent
+	}
+	if errors.Is(err, wa.ErrNotSentStale) {
+		return errors.New("not_sent: whatsapp connection stale")
+	}
 	if errors.Is(err, wa.ErrNotConnected) || errors.Is(err, wa.ErrNotPaired) {
 		return err
 	}
 	h.Log.Warn("send failed", "error", redact.Scrub(err.Error()))
+	if !errors.Is(err, wa.ErrNotSent) {
+		return wa.ErrMaybeSent
+	}
 	return fmt.Errorf("send failed: %s", redact.Scrub(err.Error()))
 }
 

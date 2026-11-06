@@ -263,6 +263,9 @@ func openResources(ctx context.Context, cfg config.Config, log *slog.Logger, ter
 		_ = st.Close()
 		return nil, fmt.Errorf("open whatsapp session: %w", err)
 	}
+	if sender, ok := client.(interface{ SetSendTimeout(time.Duration) }); ok {
+		sender.SetSendTimeout(cfg.SendTimeout)
+	}
 	if owner, ok := client.(interface{ SetInstanceOwner(bool) }); ok {
 		owner.SetInstanceOwner(true)
 	}

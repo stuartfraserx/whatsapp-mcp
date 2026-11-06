@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -141,7 +143,7 @@ func New(ctx context.Context, o Options) (*Notifier, error) {
 		return nil, err
 	}
 	n.db.SetMaxOpenConns(1)
-	if _, err = n.db.Exec(`CREATE TABLE IF NOT EXISTS seen(chat_jid TEXT NOT NULL, message_id TEXT NOT NULL, seen_at INTEGER NOT NULL, PRIMARY KEY(chat_jid,message_id)); DELETE FROM seen WHERE seen_at < ?`, o.Clock.Now().Add(-30*24*time.Hour).Unix()); err != nil {
+	if _, err = n.db.Exec(`CREATE TABLE IF NOT EXISTS seen(chat_jid TEXT NOT NULL, message_id TEXT NOT NULL, seen_at INTEGER NOT NULL, PRIMARY KEY(chat_jid,message_id)); CREATE INDEX IF NOT EXISTS seen_message_id ON seen(message_id); DELETE FROM seen WHERE seen_at < ?`, o.Clock.Now().Add(-30*24*time.Hour).Unix()); err != nil {
 		n.db.Close()
 		return nil, err
 	}
@@ -316,7 +318,7 @@ func (n *Notifier) accept(ctx context.Context, m wa.Message, chats map[string]*p
 		n.dropped.Add(1)
 		return
 	}
-	result, err := n.db.ExecContext(ctx, `INSERT OR IGNORE INTO seen(chat_jid,message_id,seen_at) VALUES(?,?,?)`, m.ChatJID, m.ID, n.o.Clock.Now().Unix())
+	result, err := n.db.ExecContext(ctx, `INSERT OR IGNORE INTO seen(chat_jid,message_id,seen_at) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM seen WHERE message_id=?)`, m.ChatJID, m.ID, n.o.Clock.Now().Unix(), m.ID)
 	if err != nil {
 		n.mu.Lock()
 		n.status.LastError = redact.Scrub("notifier dedupe database error")
@@ -387,6 +389,7 @@ func (n *Notifier) post(ctx context.Context, d delivery) {
 		req.Header.Set("Authorization", d.config.AuthorizationHeader)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", "whatsapp-mcp-notifier")
+		req.Header.Set("Idempotency-Key", d.payload.MessageID)
 		resp, err := n.http.Do(req)
 		code := 0
 		if resp != nil {
@@ -407,7 +410,7 @@ func (n *Notifier) post(ctx context.Context, d delivery) {
 			n.mu.Unlock()
 			return
 		}
-		retry := err != nil || code == 429 || code >= 500
+		retry := errors.Is(err, syscall.ECONNREFUSED) || (err == nil && (code == 429 || code == 502 || code == 503 || code == 504))
 		if !retry || attempt == 4 {
 			n.failure(code)
 			return

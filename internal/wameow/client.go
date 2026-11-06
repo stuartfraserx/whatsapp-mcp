@@ -14,8 +14,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -51,7 +53,14 @@ type Client struct {
 	lifeCtx    context.Context
 	lifeCancel context.CancelFunc
 
-	opMu sync.Mutex
+	opMu           sync.Mutex
+	SendTimeout    time.Duration
+	keepAliveCount int
+	lastKeepAlive  time.Time
+	lastHeal       time.Time
+	healing        bool
+	now            func() time.Time
+	healHook       func(context.Context) error
 
 	mu            sync.Mutex
 	handler       func(wa.Event)
@@ -62,6 +71,10 @@ type Client struct {
 	qrCancel      context.CancelFunc
 	pairedEmitted bool
 
+	uploadHook        func(context.Context, []byte, wa.MediaType) (uploaded, error)
+	sendGate          chan struct{}
+	sendHook          func(context.Context, types.JID, *waE2E.Message, whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
+	idHook            func() string
 	sync              *appStateSyncer
 	appStateMutations atomic.Int64
 }
@@ -338,6 +351,7 @@ func (c *Client) setConnected() {
 	c.mu.Lock()
 	c.connecting = false
 	c.loggedOut = false
+	c.keepAliveCount = 0
 	c.mu.Unlock()
 }
 
@@ -406,11 +420,8 @@ func (c *Client) Status() wa.Status {
 }
 
 func (c *Client) target(chatJID string) (types.JID, error) {
-	if c.cli.Store.ID == nil {
-		return types.EmptyJID, wa.ErrNotPaired
-	}
-	if !c.cli.IsConnected() || !c.cli.IsLoggedIn() {
-		return types.EmptyJID, wa.ErrNotConnected
+	if !c.HealthyForSend() {
+		return types.EmptyJID, wa.ErrNotSentStale
 	}
 	jid, err := types.ParseJID(chatJID)
 	if err != nil || jid.User == "" || jid.Server == "" {
@@ -425,11 +436,9 @@ func (c *Client) SendText(ctx context.Context, chatJID, text string) (wa.SentMes
 	if err != nil {
 		return wa.SentMessage{}, err
 	}
-	resp, err := c.cli.SendMessage(ctx, jid, &waE2E.Message{Conversation: proto.String(text)})
-	if err != nil {
-		return wa.SentMessage{}, scrubbed("send message", sendFailure(err))
-	}
-	return sentMessage(resp, jid), nil
+	sendCtx, cancel := context.WithTimeout(ctx, c.sendTimeout())
+	defer cancel()
+	return c.send(sendCtx, jid, &waE2E.Message{Conversation: proto.String(text)})
 }
 
 // SendFile implements wa.Client.
@@ -442,23 +451,18 @@ func (c *Client) SendFile(ctx context.Context, chatJID string, f wa.OutgoingFile
 		return wa.SentMessage{}, fmt.Errorf("%w: file is empty", wa.ErrNotSent)
 	}
 	kind := wa.OutgoingMediaType(f.MimeType)
-	up, err := c.cli.Upload(ctx, f.Data, whatsmeowMediaType(kind))
+	sendCtx, cancel := context.WithTimeout(ctx, c.sendTimeout())
+	defer cancel()
+	up, err := c.upload(sendCtx, f.Data, kind)
 	if err != nil {
+		if sendCtx.Err() != nil || staleTimeout(err) {
+			c.selfHeal("upload timeout")
+			return wa.SentMessage{}, wa.ErrNotSentStale
+		}
 		return wa.SentMessage{}, scrubbed("upload file", notSent(err))
 	}
-	msg := buildOutgoingMedia(kind, uploaded{
-		URL:           up.URL,
-		DirectPath:    up.DirectPath,
-		MediaKey:      up.MediaKey,
-		FileEncSHA256: up.FileEncSHA256,
-		FileSHA256:    up.FileSHA256,
-		FileLength:    up.FileLength,
-	}, f)
-	resp, err := c.cli.SendMessage(ctx, jid, msg)
-	if err != nil {
-		return wa.SentMessage{}, scrubbed("send file", sendFailure(err))
-	}
-	return sentMessage(resp, jid), nil
+	msg := buildOutgoingMedia(kind, up, f)
+	return c.send(sendCtx, jid, msg)
 }
 
 // notSent marks err as a failure that happened before any send.
@@ -473,6 +477,12 @@ func sendFailure(err error) error {
 		whatsmeow.ErrUnknownServer, whatsmeow.ErrBroadcastListUnsupported, whatsmeow.ErrNoSession,
 	} {
 		if errors.Is(err, pre) {
+			return notSent(err)
+		}
+	}
+	text := strings.ToLower(err.Error())
+	for _, pattern := range []string{"failed to get device list", "failed to get group members", "failed to send usync", "failed to query usync", "websocket not connected", "websocket is not connected", "websocket: not connected", "failed to get devices", "failed to query devices"} {
+		if strings.Contains(text, pattern) {
 			return notSent(err)
 		}
 	}
@@ -538,11 +548,9 @@ func (c *Client) EditText(ctx context.Context, chatJID, id, text string) (wa.Sen
 	if err != nil {
 		return wa.SentMessage{}, err
 	}
-	resp, err := c.cli.SendMessage(ctx, jid, c.cli.BuildEdit(jid, id, &waE2E.Message{Conversation: proto.String(text)}))
-	if err != nil {
-		return wa.SentMessage{}, scrubbed("edit message", sendFailure(err))
-	}
-	return sentMessage(resp, jid), nil
+	sendCtx, cancel := context.WithTimeout(ctx, c.sendTimeout())
+	defer cancel()
+	return c.send(sendCtx, jid, c.cli.BuildEdit(jid, id, &waE2E.Message{Conversation: proto.String(text)}))
 }
 
 // RevokeMessage implements wa.Client.
@@ -551,9 +559,7 @@ func (c *Client) RevokeMessage(ctx context.Context, chatJID, id string) (wa.Sent
 	if err != nil {
 		return wa.SentMessage{}, err
 	}
-	resp, err := c.cli.SendMessage(ctx, jid, c.cli.BuildRevoke(jid, types.EmptyJID, id))
-	if err != nil {
-		return wa.SentMessage{}, scrubbed("revoke message", sendFailure(err))
-	}
-	return sentMessage(resp, jid), nil
+	sendCtx, cancel := context.WithTimeout(ctx, c.sendTimeout())
+	defer cancel()
+	return c.send(sendCtx, jid, c.cli.BuildRevoke(jid, types.EmptyJID, id))
 }

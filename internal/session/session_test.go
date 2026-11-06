@@ -878,3 +878,30 @@ func TestWaitPairedReturnsErrQRExpiredOnQRTimeout(t *testing.T) {
 		}
 	})
 }
+
+type notifyCounter struct{ calls int }
+
+func (n *notifyCounter) Submit(wa.Message) { n.calls++ }
+func TestRedeliveryOnlyNotifiesOnInsert(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "messages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fake := watest.NewFake()
+	counter := &notifyCounter{}
+	_ = session.New(session.Options{Client: fake, Store: st, Notify: counter})
+	msg := wa.Message{ID: "redelivered", ChatJID: userJID, SenderJID: userJID, Text: "hello", Timestamp: time.Now()}
+	fake.Emit(wa.MessageEvent{Message: msg})
+	fake.Emit(wa.MessageEvent{Message: msg})
+	if counter.calls != 1 {
+		t.Fatalf("notifications=%d", counter.calls)
+	}
+	// History insertion followed by socket redelivery must also remain silent.
+	msg.ID = "history"
+	fake.Emit(wa.HistoryEvent{Messages: []wa.Message{msg}})
+	fake.Emit(wa.MessageEvent{Message: msg})
+	if counter.calls != 1 {
+		t.Fatalf("history redelivery notified: %d", counter.calls)
+	}
+}

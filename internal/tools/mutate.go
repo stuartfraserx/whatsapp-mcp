@@ -15,14 +15,16 @@ import (
 )
 
 type editMessageInput struct {
-	Chat      string `json:"chat" jsonschema:"Chat JID or international phone number with country code; names are not accepted"`
-	MessageID string `json:"message_id" jsonschema:"ID of the own text message to edit"`
-	Text      string `json:"text" jsonschema:"New text, not blank, at most 4096 characters"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional retry deduplication key (10 minute window)"`
+	Chat           string `json:"chat" jsonschema:"Chat JID or international phone number with country code; names are not accepted"`
+	MessageID      string `json:"message_id" jsonschema:"ID of the own text message to edit"`
+	Text           string `json:"text" jsonschema:"New text, not blank, at most 4096 characters"`
 }
 
 type deleteMessageInput struct {
-	Chat      string `json:"chat" jsonschema:"Chat JID or international phone number with country code; names are not accepted"`
-	MessageID string `json:"message_id" jsonschema:"ID of the own message to delete for everyone"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional retry deduplication key (10 minute window)"`
+	Chat           string `json:"chat" jsonschema:"Chat JID or international phone number with country code; names are not accepted"`
+	MessageID      string `json:"message_id" jsonschema:"ID of the own message to delete for everyone"`
 }
 
 type mutationOutput struct {
@@ -32,7 +34,7 @@ type mutationOutput struct {
 	Timestamp string `json:"timestamp"`
 }
 
-func (h *handlers) editMessage(ctx context.Context, _ *mcp.CallToolRequest, in editMessageInput) (*mcp.CallToolResult, mutationOutput, error) {
+func (h *handlers) editMessageOnce(ctx context.Context, _ *mcp.CallToolRequest, in editMessageInput) (*mcp.CallToolResult, mutationOutput, error) {
 	if strings.TrimSpace(in.Text) == "" {
 		return nil, mutationOutput{}, errors.New("text must not be blank")
 	}
@@ -43,7 +45,7 @@ func (h *handlers) editMessage(ctx context.Context, _ *mcp.CallToolRequest, in e
 	return nil, out, err
 }
 
-func (h *handlers) deleteMessage(ctx context.Context, _ *mcp.CallToolRequest, in deleteMessageInput) (*mcp.CallToolResult, mutationOutput, error) {
+func (h *handlers) deleteMessageOnce(ctx context.Context, _ *mcp.CallToolRequest, in deleteMessageInput) (*mcp.CallToolResult, mutationOutput, error) {
 	out, err := h.mutateMessage(ctx, in.Chat, in.MessageID, "", false)
 	return nil, out, err
 }
@@ -105,7 +107,8 @@ func (h *handlers) mutateMessage(ctx context.Context, chat, id, text string, edi
 	}
 	if err != nil {
 		h.refundIfNotSent(slot, err)
-		return mutationOutput{}, h.sendError(err)
+		out := failedSend(sent, res.JID, err)
+		return mutationOutput{Status: out.Status, MessageID: out.MessageID, ChatJID: out.ChatJID}, h.sendError(err)
 	}
 	at := sent.Timestamp
 	if at.IsZero() {

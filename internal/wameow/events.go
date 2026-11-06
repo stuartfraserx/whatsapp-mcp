@@ -80,6 +80,7 @@ func (c *Client) handleEvent(raw any) {
 		c.emit(wa.StreamReplacedEvent{})
 	case *events.KeepAliveTimeout:
 		c.log.Warn("whatsapp keepalive timeout")
+		c.keepAliveTimeout()
 	case *events.ConnectFailure:
 		c.log.Warn("whatsapp connection failure", "reason", redact.Scrub(evt.Reason.String()))
 		c.reconnect.disconnected("connect_failure")

@@ -447,3 +447,11 @@ func TestProxyDialFailureRediscoversBeforeReplay(t *testing.T) {
 		t.Fatalf("calls=%d addr=%s", calls.Load(), p.info.HTTPAddr)
 	}
 }
+
+func TestProxySendHeaderDeadline(t *testing.T) {
+	transport := newProxyTransport()
+	defer transport.CloseIdleConnections()
+	if transport.ResponseHeaderTimeout != 90*time.Second {
+		t.Fatalf("header timeout=%v", transport.ResponseHeaderTimeout)
+	}
+}

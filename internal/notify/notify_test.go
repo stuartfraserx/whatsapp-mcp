@@ -41,6 +41,9 @@ func newTestNotifier(t *testing.T, handler http.HandlerFunc) (*Notifier, *watest
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			t.Error(err)
 		}
+		if r.Header.Get("Idempotency-Key") != p.MessageID {
+			t.Error("missing idempotency key")
+		}
 		received <- p
 		if handler != nil {
 			handler(w, r)
@@ -168,7 +171,7 @@ func TestCatchupWindow(t *testing.T) {
 }
 
 func TestRetryAndNoRetry(t *testing.T) {
-	for _, code := range []int{500, 400} {
+	for _, code := range []int{429, 502, 503, 504, 500, 400} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			var calls atomic.Int32
 			n, clock, _, received := newTestNotifier(t, func(w http.ResponseWriter, r *http.Request) {
@@ -183,7 +186,7 @@ func TestRetryAndNoRetry(t *testing.T) {
 			clock.Advance(time.Second)
 			eventually(t, func() bool { return calls.Load() == 1 })
 			<-received
-			if code == 400 {
+			if code == 400 || code == 500 {
 				eventually(t, func() bool { return n.Status().Failed == 1 })
 				clock.Advance(time.Minute)
 				if n.Status().Retried != 0 {
@@ -375,5 +378,37 @@ func TestMissingConfigCanBeCreatedWithoutRestart(t *testing.T) {
 	eventually(t, func() bool { return n.Status().Enabled })
 	if n.Status().URLHost != "example.test" || n.Status().ConfigError != "" {
 		t.Fatalf("reloaded status %+v", n.Status())
+	}
+}
+
+func TestDedupeByMessageIDAcrossChats(t *testing.T) {
+	n, clock, _, received := newTestNotifier(t, nil)
+	first := message(clock, "same-id")
+	n.Submit(first)
+	n.Submit(first)
+	first.ChatJID = "other@s.whatsapp.net"
+	n.Submit(first)
+	eventually(t, func() bool { return n.Status().Deduped == 2 })
+	clock.Advance(time.Second)
+	eventually(t, func() bool { return n.Status().Sent == 1 })
+	<-received
+	if len(received) != 0 {
+		t.Fatal("duplicate delivered")
+	}
+}
+func TestWrittenPOSTTimeoutDoesNotRetry(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	n, clock, _, received := newTestNotifier(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); <-release; w.WriteHeader(200) })
+	defer close(release)
+	n.http.Timeout = 15 * time.Millisecond
+	n.Submit(message(clock, "timeout-after-write"))
+	eventually(t, func() bool { return n.Status().PendingChats == 1 })
+	clock.Advance(time.Second)
+	<-received
+	eventually(t, func() bool { return n.Status().Failed == 1 })
+	clock.Advance(time.Minute)
+	if n.Status().Retried != 0 || calls.Load() != 1 {
+		t.Fatalf("ambiguous POST retried: calls=%d status=%+v", calls.Load(), n.Status())
 	}
 }

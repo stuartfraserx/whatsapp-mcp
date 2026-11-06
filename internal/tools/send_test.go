@@ -458,8 +458,8 @@ func TestSendMessageAllowlist(t *testing.T) {
 	for _, recipient := range []string{bobJID, "Bob Builder", "+33622222222", groupJID} {
 		e.ok("send_message", map[string]any{"recipient": recipient, "text": "allowed"})
 	}
-	if n := len(e.fake.Sent()); n != 4 {
-		t.Fatalf("sent %d messages, want 4", n)
+	if n := len(e.fake.Sent()); n != 2 {
+		t.Fatalf("sent %d messages, want 2 (recipient aliases dedupe)", n)
 	}
 }
 
@@ -552,8 +552,8 @@ func TestSendMessageClientErrorIsToolErrorAndNothingIsStored(t *testing.T) {
 		wantErr string
 		notWant string
 	}{
-		{"generic failure", errors.New("network down"), "send failed: network down", ""},
-		{"phone number scrubbed", errors.New("cannot reach +33612345678 now"), "send failed", "33612345678"},
+		{"generic failure", errors.New("network down"), "unknown_maybe_sent", ""},
+		{"phone number scrubbed", errors.New("cannot reach +33612345678 now"), "unknown_maybe_sent", "33612345678"},
 		{"not connected is passed through", wa.ErrNotConnected, wa.ErrNotConnected.Error(), ""},
 		{"not paired is passed through", wa.ErrNotPaired, wa.ErrNotPaired.Error(), ""},
 	}
@@ -784,10 +784,10 @@ func TestSendFileSharesRateLimitWithSendMessage(t *testing.T) {
 
 func TestSendFileClientErrorIsToolError(t *testing.T) {
 	e := newEnv(t)
-	e.fake.SetSendError(errors.New("upload failed"))
+	e.fake.SetSendError(fmt.Errorf("%w: upload failed", wa.ErrNotSent))
 	path := newOutboxFile(e, "u.png", []byte("x"))
 
-	e.fail("send_file", map[string]any{"recipient": aliceJID, "path": path}, "send failed: upload failed")
+	e.fail("send_file", map[string]any{"recipient": aliceJID, "path": path}, "upload failed")
 	if msgs, _, _ := e.store.ListMessages(e.ctx(), store.MessageQuery{}); len(msgs) != 0 {
 		t.Fatalf("failed send was stored: %+v", msgs)
 	}
@@ -878,6 +878,7 @@ func TestSendErrorsThatMayHaveBeenDeliveredKeepTheRateSlot(t *testing.T) {
 				e.fail(tool, args, "")
 
 				e.fake.SetSendError(nil)
+				args["idempotency_key"] = "fresh-attempt-to-check-rate-slot"
 				res := e.call(tool, args)
 				if refunded := !res.IsError; refunded != tt.refund {
 					t.Fatalf("second send succeeded = %v, want %v (slot refunded)", refunded, tt.refund)

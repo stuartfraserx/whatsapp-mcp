@@ -135,11 +135,16 @@ func TestMutationRateLimitRefund(t *testing.T) {
 					failure = fmt.Errorf("%w: failed", wa.ErrNotSent)
 				}
 				e.fake.SetSendError(failure)
-				e.fail(tool, args, "send failed")
+				want := "unknown_maybe_sent"
+				if definitelyNotSent {
+					want = "send failed"
+				}
+				e.fail(tool, args, want)
 				e.fake.SetSendError(nil)
 				if definitelyNotSent {
 					e.ok(tool, args)
 				} else {
+					args["idempotency_key"] = "intentional-new-attempt"
 					e.fail(tool, args, "rate limit")
 				}
 			})
@@ -168,6 +173,7 @@ func TestMutationWindowUsesOriginalTimestamp(t *testing.T) {
 	args := map[string]any{"chat": aliceJID, "message_id": "m", "text": strings.Repeat("😀", 4096)}
 	e.ok("edit_message", args)
 	e.clock.Advance(time.Nanosecond)
+	args["idempotency_key"] = "new-edit"
 	e.fail("edit_message", args, "15-minute WhatsApp edit window")
 	if len(e.fake.Sent()) != 1 {
 		t.Fatal("expired edit sent")

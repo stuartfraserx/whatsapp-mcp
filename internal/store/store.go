@@ -94,15 +94,28 @@ func (s *Store) UpsertChats(ctx context.Context, chats []wa.Chat) error {
 // message time. An existing message is refreshed only when it comes from the
 // same sender; a copy claiming another sender leaves the row untouched.
 func (s *Store) SaveMessage(ctx context.Context, m wa.Message) error {
+	_, err := s.SaveMessageResult(ctx, m)
+	return err
+}
+
+// SaveMessageResult reports whether this transaction inserted a new message.
+func (s *Store) SaveMessageResult(ctx context.Context, m wa.Message) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin: %w", err)
+		return false, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := saveMessage(ctx, tx, m); err != nil {
-		return err
+	var exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM messages WHERE chat_jid=? AND id=?)", m.ChatJID, m.ID).Scan(&exists); err != nil {
+		return false, err
 	}
-	return tx.Commit()
+	if err := saveMessage(ctx, tx, m); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return !exists, nil
 }
 
 // ApplyEdit replaces the text of the stored message id in chatJID sent by

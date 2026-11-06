@@ -47,6 +47,7 @@ const (
 	EnvHTTPNoAuth         = "WHATSAPP_MCP_HTTP_NO_AUTH"
 	EnvSendEnabled        = "WHATSAPP_MCP_SEND_ENABLED"
 	EnvAllowlist          = "WHATSAPP_MCP_ALLOWLIST"
+	EnvSendTimeout        = "WHATSAPP_MCP_SEND_TIMEOUT"
 	EnvRateInterval       = "WHATSAPP_MCP_RATE_INTERVAL"
 	EnvRateHourly         = "WHATSAPP_MCP_RATE_HOURLY"
 	EnvLogLevel           = "WHATSAPP_MCP_LOG_LEVEL"
@@ -64,6 +65,7 @@ type Config struct {
 	HTTPNoAuth                                       bool
 	SendEnabled                                      bool
 	Allowlist                                        []string
+	SendTimeout                                      time.Duration
 	RateInterval                                     time.Duration
 	RateHourly                                       int
 	LogLevel                                         slog.Level
@@ -101,6 +103,14 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 		sendDefault = b
 	}
 
+	sendDefaultTimeout := 25 * time.Second
+	if v, ok := env(EnvSendTimeout); ok {
+		d, err := time.ParseDuration(strings.TrimSpace(v))
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: invalid duration", EnvSendTimeout)
+		}
+		sendDefaultTimeout = d
+	}
 	intervalDefault := defaultRateInterval
 	if v, ok := env(EnvRateInterval); ok {
 		d, err := time.ParseDuration(strings.TrimSpace(v))
@@ -149,6 +159,7 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 	httpNoAuth := fs.Bool("http-no-auth", noAuthDefault, "disable HTTP bearer authentication (loopback only)")
 	sendEnabled := fs.Bool("send-enabled", sendDefault, "register the send_message, send_file, edit_message and delete_message tools")
 	allowlist := fs.String("allowlist", envOr(EnvAllowlist, ""), "comma-separated JIDs or phone numbers allowed as recipients (empty = any)")
+	sendTimeout := fs.Duration("send-timeout", sendDefaultTimeout, "send deadline (5s..120s)")
 	rateInterval := fs.Duration("rate-interval", intervalDefault, "minimum interval between sends (>= 1s)")
 	rateHourly := fs.Int("rate-hourly", hourlyDefault, "maximum sends per trailing hour (1..1000)")
 	logLevel := fs.String("log-level", envOr(EnvLogLevel, "info"), "log level: debug, info, warn, error")
@@ -169,6 +180,7 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 		HTTPNoAuth:         *httpNoAuth,
 		SendEnabled:        *sendEnabled,
 		Allowlist:          splitList(*allowlist),
+		SendTimeout:        *sendTimeout,
 		RateInterval:       *rateInterval,
 		RateHourly:         *rateHourly,
 	}
@@ -204,6 +216,9 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 		return Config{}, fmt.Errorf("invalid transport %q: want stdio or http", cfg.Transport)
 	}
 
+	if cfg.SendTimeout < 5*time.Second || cfg.SendTimeout > 120*time.Second {
+		return Config{}, errors.New("send timeout must be 5s..120s")
+	}
 	if cfg.RateInterval < minRateInterval {
 		return Config{}, fmt.Errorf("rate interval %s is below the minimum of %s", cfg.RateInterval, minRateInterval)
 	}

@@ -133,11 +133,12 @@ func (s *Session) logStoreError(op string, err error) {
 func (s *Session) saveMessage(m wa.Message) {
 	ctx, cancel := storeContext()
 	defer cancel()
-	if err := s.store.SaveMessage(ctx, m); err != nil {
+	inserted, err := s.store.SaveMessageResult(ctx, m)
+	if err != nil {
 		s.logStoreError("save_message", err)
 		return
 	}
-	if s.notify != nil {
+	if inserted && s.notify != nil {
 		s.notify.Submit(m)
 	}
 	s.log.Debug("message stored", "chat", redact.JID(m.ChatJID))

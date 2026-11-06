@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -52,7 +53,11 @@ type Deps struct {
 	AllowlistActive bool
 }
 
-type handlers struct{ Deps }
+type handlers struct {
+	Deps
+	attemptsMu sync.Mutex
+	attempts   map[string]*attemptLock
+}
 
 // Register adds the tools to s. The send tools are registered only when
 // d.SendEnabled is set.

@@ -40,6 +40,7 @@ with mode `0700`. Files inside are created with mode `0600`.
 | `WHATSAPP_MCP_HTTP_NO_AUTH` | `--http-no-auth` | `false` | Disable bearer authentication in HTTP mode. Refused when a token or token file is also set. |
 | `WHATSAPP_MCP_SEND_ENABLED` | `--send-enabled` | `true` | Set to `false` to remove the send tools entirely. |
 | `WHATSAPP_MCP_ALLOWLIST` | `--allowlist` | empty | Comma-separated JIDs or phone numbers. Empty means any recipient. |
+| `WHATSAPP_MCP_SEND_TIMEOUT` | `--send-timeout` | `25s` | Send deadline including file upload; range `5s`–`120s`. |
 | `WHATSAPP_MCP_RATE_INTERVAL` | `--rate-interval` | `3s` | Minimum time between two sends. Must be at least `1s`. |
 | `WHATSAPP_MCP_RATE_HOURLY` | `--rate-hourly` | `60` | Maximum sends in any trailing hour. Range 1 to 1000. |
 | `WHATSAPP_MCP_WEBHOOK_CONFIG` | `--webhook-config` | empty | Private JSON inbound webhook configuration; empty disables the notifier entirely. |
@@ -252,15 +253,20 @@ Each request has `Content-Type: application/json` and
 }
 ```
 
-Dedupe keys `(chat_jid, message_id)` are recorded when accepted into a batch and
+The session submits inbound notifications only for newly inserted messages;
+reconnect redeliveries that upsert an existing message do not notify.
+Dedupe checks `message_id` alone as well as `(chat_jid, message_id)`, and keys are recorded when accepted into a batch and
 persist across restarts in `<data>/notifier.db`. Rows older than 30 days are
 pruned at startup. This is a best-effort wakeup service: a crash, shutdown, full
 queue, failed delivery or configuration change can lose notifications, and seen
 messages are not replayed. Message storage is independent of delivery.
 
-A single worker sends requests with a ten-second HTTP timeout. Network failures,
-429 and 5xx responses retry, up to five total attempts, with 2, 4, 8 and 16 second
-waits. Other unsuccessful responses fail immediately. The ingress queue, delivery
+A single worker sends requests with a ten-second HTTP timeout and an
+`Idempotency-Key: <message_id>` header. Only connection refusal and HTTP 429,
+502, 503 and 504 retry, up to five total attempts, with 2, 4, 8 and 16 second
+waits. Timeouts, unexpected EOF, context deadlines and other ambiguous network
+failures do not retry because the receiver may already have processed the POST.
+Other unsuccessful responses fail immediately. The ingress queue, delivery
 queue and pending chat count are bounded at 256 each; saturation increments
 `dropped`. Shutdown discards pending batches and allows an active POST up to five
 seconds before cancellation, then closes the dedupe database.
@@ -321,7 +327,28 @@ A WhatsApp stream replaced by another client is logged at WARN and increments
 cause. The lock owner reconnects after 5, 10, 20 seconds and so on, capped at five
 minutes. Ten minutes of stable connection reset the delay. Normal disconnects
 continue to use whatsmeow's built-in reconnect behavior. Keepalive timeouts and
-connection failures also produce warnings.
+connection failures also produce warnings. One recent keepalive timeout blocks
+sends for up to two minutes; two consecutive timeouts or a stale send/usync
+timeout trigger an in-process disconnect/reconnect using the paired session,
+without QR or pairing. Recovery is single-flight with a 30-second cooldown.
+Connected events and successful sends reset the keepalive counter.
+
+
+Send tools (`send_message`, `send_file`, `edit_message`, `delete_message`) accept
+an optional `idempotency_key`. For ten minutes, identical attempts share their
+result and message ID, including concurrent calls and uncertain deliveries.
+Without a client key, the operation, resolved chat JID, text or path, caption,
+and mutation target ID form a hashed fingerprint. Records persist across
+restarts in private mode-0600 `<data>/send_attempts.db`. Explicit keys override
+the fingerprint within an operation. Use a fresh key for an intentional repeat.
+
+A stale connection returns exactly `not_sent: whatsapp connection stale` and
+refunds the rate slot. Once a send may have reached the socket, failures return
+`unknown_maybe_sent` with `message_id` when available, and keep the rate slot.
+Retrying that attempt within the window returns the saved outcome without
+sending again; check delivery before intentionally repeating it. A crash during
+an in-flight attempt is also treated as uncertain. The stdio proxy waits up to
+90 seconds for response headers; the default daemon send deadline is 25 seconds.
 
 ### Supervisor
 

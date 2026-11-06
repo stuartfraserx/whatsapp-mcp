@@ -24,7 +24,7 @@ import (
 
 var startProxyDaemon = daemon.Start
 
-var newProxyTransport = func() *http.Transport { return &http.Transport{Proxy: nil, ResponseHeaderTimeout: 10 * time.Second} }
+var newProxyTransport = func() *http.Transport { return &http.Transport{Proxy: nil, ResponseHeaderTimeout: 90 * time.Second} }
 
 type bearerTransport struct {
 	token string

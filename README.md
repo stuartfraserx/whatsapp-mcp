@@ -191,6 +191,7 @@ permissions are refused. A missing or invalid file disables delivery and reports
   "authorization_header": "",
   "allowed_senders": ["573133992340"],
   "allowed_groups": [],
+  "catchup_minutes": 60,
   "debounce_seconds": 20,
   "text_preview_chars": 280
 }
@@ -215,11 +216,15 @@ require an exact `@g.us` entry in `allowed_groups`; sender restrictions do not
 apply to allowed groups.
 
 Only live, newly stored text/media messages enter the notifier. Messages from the
-account itself, status broadcasts, messages older than process startup, and
+account itself, status broadcasts, messages older than the catch-up cutoff, and
 non-message events are ignored. History batches, reactions, edits, revokes and
 view-once content never enter the live notification path. Local name resolution
 uses the same saved contact/chat/push-name rules as the read tools and performs
 no network lookup.
+
+`catchup_minutes` defaults to 60 when omitted (range 0–1440). Messages up to
+that many minutes before process startup are accepted; 0 restores strict startup
+filtering. Persistent dedupe prevents repeat delivery of catch-up messages.
 
 The first accepted message starts a per-chat debounce window (default 20 seconds,
 range 1–600). Messages during that window replace the payload with the latest
@@ -742,7 +747,10 @@ listeners remain unhealthy. One-shot tests skip the initial wait unless grace is
 explicitly set. Fallback-port notices are informational and include the preferred
 port owner.
 It checks the supervised daemon PID, TCP listener ownership, MCP health, webhook
-failure counter growth, and new bind errors in the daemon log. It requests at
+failure counter growth, and new bind errors in the daemon log. Two or more
+`whatsapp keepalive timeout` lines since the last check mark the connection
+unhealthy even when health reports connected. The first check establishes a log
+baseline and ignores historical lines. It requests at
 most one restart per outage, then rechecks and emits one down event. Recovery
 emits one recovered event. Persistent state and a single-instance lock live in
 `WHATSAPP_MCP_LOG_DIR` (default `<data-dir>/logs`); watchdog.log rotates at 5 MiB.

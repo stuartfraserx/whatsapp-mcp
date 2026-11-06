@@ -75,7 +75,7 @@ listener_owner() {
 }
 probe() {
     reason= port_owner= state= paired=false healthy=true
-    local pid= addr= port= sockets= health= failed=0 bytes=0 inode=0 age= young=false new_log= preferred= busy_line= busy_owner= health_ok=false
+    local pid= addr= port= sockets= health= failed=0 bytes=0 inode=0 age= young=false new_log= keepalive_count=0 preferred= busy_line= busy_owner= health_ok=false
     if [[ -f "$log_dir/daemon.pid" ]]; then IFS= read -r pid < "$log_dir/daemon.pid" || :; fi
     if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" 2>/dev/null; then
         healthy=false; reason+='daemon pid is not alive; '
@@ -128,6 +128,11 @@ probe() {
             log_offset=0
         fi
         new_log=$(tail -c "+$((log_offset+1))" "$log_dir/daemon.log" | head -c "$((bytes-log_offset))")
+        keepalive_count=$(grep -Fc 'whatsapp keepalive timeout' <<< "$new_log") || :
+        if (( keepalive_count >= 2 )); then
+            healthy=false
+            reason+="repeated whatsapp keepalive timeouts ($keepalive_count); "
+        fi
         if grep -q 'HTTP ports busy; using fallback' <<< "$new_log"; then
             preferred=${WHATSAPP_MCP_HTTP_ADDR:-127.0.0.1:8765}
             port=${preferred##*:}

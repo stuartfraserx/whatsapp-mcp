@@ -119,7 +119,7 @@ func TestFiltering(t *testing.T) {
 	}{
 		{"from_me", func(m *wa.Message) { m.FromMe = true }},
 		{"status_broadcast", func(m *wa.Message) { m.ChatJID = "status@broadcast" }},
-		{"before_start", func(m *wa.Message) { m.Timestamp = clock.Now().Add(-time.Second) }},
+		{"before_start", func(m *wa.Message) { m.Timestamp = clock.Now().Add(-61 * time.Minute) }},
 		{"not_message", func(m *wa.Message) { m.Text = "" }},
 		{"group_not_allowed", func(m *wa.Message) { m.ChatJID = "1@g.us" }},
 	}
@@ -135,6 +135,38 @@ func TestFiltering(t *testing.T) {
 	n.Submit(message(clock, "sender"))
 	eventually(t, func() bool { return n.Status().Ignored["sender_not_allowed"] == 1 })
 }
+func TestCatchupWindow(t *testing.T) {
+	n, clock, path, received := newTestNotifier(t, nil)
+	m := message(clock, "catchup")
+	m.Timestamp = n.o.StartedAt.Add(-30 * time.Minute)
+	n.Submit(m)
+	eventually(t, func() bool { return n.Status().PendingChats == 1 })
+	clock.Advance(time.Second)
+	eventually(t, func() bool { return n.Status().Sent == 1 })
+	if p := <-received; p.MessageID != m.ID {
+		t.Fatal("wrong catch-up message delivered")
+	}
+	n.Submit(m)
+	eventually(t, func() bool { return n.Status().Deduped == 1 })
+	if n.Status().PendingChats != 0 || n.Status().Sent != 1 {
+		t.Fatal("duplicate catch-up queued or sent")
+	}
+	old := message(clock, "too-old")
+	old.Timestamp = n.o.StartedAt.Add(-61 * time.Minute)
+	n.Submit(old)
+	eventually(t, func() bool { return n.Status().Ignored["before_start"] == 1 })
+	writeConfig(t, path, `{"enabled":true,"url":"http://localhost:8765/wake","catchup_minutes":0,"debounce_seconds":1}`)
+	clock.Advance(10 * time.Second)
+	eventually(t, func() bool { n.mu.Lock(); defer n.mu.Unlock(); return n.config.CatchupMinutes == 0 })
+	strict := message(clock, "strict")
+	strict.Timestamp = n.o.StartedAt.Add(-time.Second)
+	n.Submit(strict)
+	eventually(t, func() bool { return n.Status().Ignored["before_start"] == 2 })
+	if n.Status().PendingChats != 0 || n.Status().Sent != 1 {
+		t.Fatal("ignored message queued or sent")
+	}
+}
+
 func TestRetryAndNoRetry(t *testing.T) {
 	for _, code := range []int{500, 400} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {

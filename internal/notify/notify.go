@@ -282,6 +282,7 @@ func (n *Notifier) accept(ctx context.Context, m wa.Message, chats map[string]*p
 	n.mu.Lock()
 	c, enabled, gen := n.config, n.status.Enabled, n.generation
 	n.mu.Unlock()
+	cutoff := n.o.StartedAt.Add(-time.Duration(c.CatchupMinutes) * time.Minute)
 	reason := ""
 	switch {
 	case !enabled:
@@ -290,7 +291,7 @@ func (n *Notifier) accept(ctx context.Context, m wa.Message, chats map[string]*p
 		reason = "from_me"
 	case m.ChatJID == "status@broadcast":
 		reason = "status_broadcast"
-	case m.Timestamp.Before(n.o.StartedAt):
+	case m.Timestamp.Before(cutoff):
 		reason = "before_start"
 	case m.Text == "" && m.Media == nil:
 		reason = "not_message"

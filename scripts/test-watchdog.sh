@@ -15,6 +15,9 @@ printf '{"http_addr":"127.0.0.1:18765"}\n' > "$tmp/data/daemon.json"
 # Socket inspection is deterministic and never opens a real listener.
 printf '#!/usr/bin/env bash\nprintf '\''LISTEN 0 128 127.0.0.1:18765 0.0.0.0:* users:(("sleep",pid=%s,fd=3))\\n'\''\n' "$pid" > "$tmp/bin/ss"
 chmod +x "$tmp/bin/ss"
+# Exercise alert failure handling without making any network request.
+printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 7\n' > "$tmp/bin/curl"
+chmod +x "$tmp/bin/curl"
 printf '#!/usr/bin/env bash\ncat "$HEALTH_FILE"\n' > "$tmp/health"
 chmod +x "$tmp/health"
 export PATH="$tmp/bin:$PATH" HEALTH_FILE="$tmp/health.json"
@@ -69,7 +72,7 @@ rm "$tmp/bin/sleep"
 health true connected 0
 # First run must ignore historical failures, even for a TERM-eligible daemon.
 rm -f "$tmp/logs/watchdog.state" "$tmp/logs/watchdog.log"
-printf 'listen on 127.0.0.1:19999: address already in use\n' > "$tmp/logs/daemon.log"
+printf 'whatsapp keepalive timeout\nwhatsapp keepalive timeout\nlisten on 127.0.0.1:19999: address already in use\n' > "$tmp/logs/daemon.log"
 cycle
 [[ ! -f "$tmp/logs/watchdog.log" ]]
 grep -q "^log_offset=$(stat -c '%s' "$tmp/logs/daemon.log")$" "$tmp/logs/watchdog.state"
@@ -108,4 +111,19 @@ grep -q 'sport = :19999' "$HEALTH_FILE.ss"
 [[ $(grep -c 'preferred port busy; fallback in use' "$tmp/logs/watchdog.log") == 1 ]]
 grep -q "preferred port busy; fallback in use: pid=$pid cmd=" "$tmp/logs/watchdog.log"
 ! grep -Eq 'unhealthy|restart requested|whatsapp_daemon_down|alert' "$tmp/logs/watchdog.log"
-echo 'watchdog tests passed' 
+# A single new keepalive timeout must not cause an outage.
+printf 'whatsapp keepalive timeout\n' >> "$tmp/logs/daemon.log"
+cycle
+! grep -Eq 'unhealthy|restart requested|whatsapp_daemon_down' "$tmp/logs/watchdog.log"
+# Repeated timeouts override healthy/connected and TERM the eligible daemon.
+printf 'whatsapp keepalive timeout\nwhatsapp keepalive timeout\n' >> "$tmp/logs/daemon.log"
+bash "$root/scripts/whatsapp-mcp-watchdog.sh"
+wait "$pid" 2>/dev/null || :
+grep -q 'unhealthy: repeated whatsapp keepalive timeouts (2);' "$tmp/logs/watchdog.log"
+[[ $(grep -c 'daemon restart requested' "$tmp/logs/watchdog.log") == 1 ]]
+[[ $(grep -c '"event":"whatsapp_daemon_down"' "$tmp/logs/watchdog.log") == 1 ]]
+# The same outage cannot request another TERM or emit another down alert.
+bash "$root/scripts/whatsapp-mcp-watchdog.sh"
+[[ $(grep -c 'daemon restart requested' "$tmp/logs/watchdog.log") == 1 ]]
+[[ $(grep -c '"event":"whatsapp_daemon_down"' "$tmp/logs/watchdog.log") == 1 ]]
+echo 'watchdog tests passed'

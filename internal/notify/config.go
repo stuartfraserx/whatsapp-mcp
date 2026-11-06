@@ -14,6 +14,7 @@ import (
 
 // Config is private webhook configuration; it must never be logged or exposed.
 type Config struct {
+	CatchupMinutes      int      `json:"catchup_minutes"`
 	Enabled             bool     `json:"enabled"`
 	URL                 string   `json:"url"`
 	AuthorizationHeader string   `json:"authorization_header"`
@@ -32,9 +33,20 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, errors.New("config must be a readable regular file with mode 0600 or 0400")
 	}
-	var c Config
-	if json.Unmarshal(b, &c) != nil {
+	var raw struct {
+		Config
+		CatchupMinutes *int `json:"catchup_minutes"`
+	}
+	if json.Unmarshal(b, &raw) != nil {
 		return Config{}, errors.New("invalid config JSON")
+	}
+	c := raw.Config
+	c.CatchupMinutes = 60
+	if raw.CatchupMinutes != nil {
+		c.CatchupMinutes = *raw.CatchupMinutes
+	}
+	if c.CatchupMinutes < 0 || c.CatchupMinutes > 1440 {
+		return Config{}, errors.New("config limits out of range")
 	}
 	if c.DebounceSeconds == 0 {
 		c.DebounceSeconds = 20

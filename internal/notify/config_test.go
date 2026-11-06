@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,7 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.AuthorizationHeader != "Bearer secret" || c.DebounceSeconds != 20 || c.TextPreviewChars != 280 {
+	if c.AuthorizationHeader != "Bearer secret" || c.DebounceSeconds != 20 || c.TextPreviewChars != 280 || c.CatchupMinutes != 60 {
 		t.Fatalf("bad defaults/header: %+v", c)
 	}
 	for _, mode := range []os.FileMode{0640, 0604, 0700, 0200} {
@@ -45,10 +46,17 @@ func TestLoad(t *testing.T) {
 	if _, err := Load(filepath.Dir(path)); err == nil {
 		t.Fatal("accepted directory")
 	}
-	for _, body := range []string{`{`, `{"enabled":true}`, `{"url":"http://example.test/x"}`, `{"url":"https://user:pass@example.test"}`, `{"debounce_seconds":601}`, `{"debounce_seconds":-1}`, `{"text_preview_chars":2001}`, `{"allowed_groups":["123@s.whatsapp.net"]}`} {
+	for _, body := range []string{`{`, `{"enabled":true}`, `{"url":"http://example.test/x"}`, `{"url":"https://user:pass@example.test"}`, `{"catchup_minutes":-1}`, `{"catchup_minutes":1441}`, `{"debounce_seconds":601}`, `{"debounce_seconds":-1}`, `{"text_preview_chars":2001}`, `{"allowed_groups":["123@s.whatsapp.net"]}`} {
 		writeConfig(t, path, body)
 		if _, err := Load(path); err == nil {
 			t.Errorf("accepted %s", body)
+		}
+	}
+	for _, minutes := range []int{0, 60, 1440} {
+		writeConfig(t, path, fmt.Sprintf(`{"catchup_minutes":%d}`, minutes))
+		c, err := Load(path)
+		if err != nil || c.CatchupMinutes != minutes {
+			t.Fatalf("catchup %d: got %d, error %v", minutes, c.CatchupMinutes, err)
 		}
 	}
 	for _, host := range []string{"127.0.0.1", "localhost"} {

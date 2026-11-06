@@ -13,7 +13,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     key=${line%%=*}
     value=${line#*=}
     case "$key" in
-        WHATSAPP_MCP_DATA_DIR|WHATSAPP_MCP_HTTP_ADDR|WHATSAPP_MCP_HTTP_TOKEN_FILE|WHATSAPP_MCP_WEBHOOK_CONFIG|WHATSAPP_MCP_BIN|WHATSAPP_MCP_LOG_DIR|WHATSAPP_MCP_DAEMON_START_COMMAND)
+        WHATSAPP_MCP_HTTP_PORT_FALLBACK|WHATSAPP_MCP_WATCHDOG|WHATSAPP_MCP_WATCHDOG_INTERVAL|WHATSAPP_MCP_WATCHDOG_RECHECK|WHATSAPP_MCP_WATCHDOG_GRACE|WHATSAPP_MCP_ALERT_WEBHOOK_CONFIG|WHATSAPP_MCP_WATCHDOG_DISABLE|WHATSAPP_MCP_DATA_DIR|WHATSAPP_MCP_HTTP_ADDR|WHATSAPP_MCP_HTTP_TOKEN_FILE|WHATSAPP_MCP_WEBHOOK_CONFIG|WHATSAPP_MCP_BIN|WHATSAPP_MCP_LOG_DIR|WHATSAPP_MCP_DAEMON_START_COMMAND)
             export "$key=$value" ;;
         *) echo "unsupported key in supervisor env file" >&2; exit 1 ;;
     esac
@@ -28,6 +28,17 @@ export WHATSAPP_MCP_DAEMON_START_COMMAND=${WHATSAPP_MCP_DAEMON_START_COMMAND:-$s
 export WHATSAPP_MCP_ENV_FILE=$env_file
 pid_file=$log_dir/supervisor.pid
 child_file=$log_dir/daemon.pid
+watchdog_file=$log_dir/watchdog.pid
+watchdog_loop_file=$log_dir/watchdog-loop.pid
+watchdog=${WHATSAPP_MCP_WATCHDOG:-$(dirname "$script")/whatsapp-mcp-watchdog}
+if [[ ! -e "$watchdog" && -z ${WHATSAPP_MCP_WATCHDOG:-} ]]; then watchdog=$watchdog.sh; fi
+export WHATSAPP_MCP_WATCHDOG=$watchdog
+export WHATSAPP_MCP_HTTP_PORT_FALLBACK=${WHATSAPP_MCP_HTTP_PORT_FALLBACK:-0}
+export WHATSAPP_MCP_WATCHDOG_INTERVAL=${WHATSAPP_MCP_WATCHDOG_INTERVAL:-300}
+export WHATSAPP_MCP_WATCHDOG_GRACE=${WHATSAPP_MCP_WATCHDOG_GRACE:-90}
+export WHATSAPP_MCP_WATCHDOG_RECHECK=${WHATSAPP_MCP_WATCHDOG_RECHECK:-60}
+export WHATSAPP_MCP_ALERT_WEBHOOK_CONFIG=${WHATSAPP_MCP_ALERT_WEBHOOK_CONFIG:-/home/box/secrets/whatsapp-laura-alert-webhook.json}
+export WHATSAPP_MCP_WATCHDOG_DISABLE=${WHATSAPP_MCP_WATCHDOG_DISABLE:-0}
 
 running() {
     [[ -f "$1" ]] || return 1
@@ -40,8 +51,12 @@ case ${1:-} in
     status)
         if running "$pid_file"; then echo 'supervisor: running'; else echo 'supervisor: stopped'; fi
         if running "$child_file"; then echo 'daemon: running'; else echo 'daemon: stopped'; fi
+        if running "$watchdog_file"; then echo 'watchdog: running'; else echo 'watchdog: stopped'; fi
+        if [[ -f "$WHATSAPP_MCP_DATA_DIR/daemon.json" ]]; then jq -r '"http_addr: " + .http_addr' "$WHATSAPP_MCP_DATA_DIR/daemon.json" 2>/dev/null || :; fi
         exit 0 ;;
     stop)
+        if running "$watchdog_loop_file"; then kill "$(cat "$watchdog_loop_file")" 2>/dev/null || :; fi
+        if running "$watchdog_file"; then kill "$(cat "$watchdog_file")" 2>/dev/null || :; fi
         if running "$pid_file"; then kill "$(cat "$pid_file")" 2>/dev/null || :; fi
         if running "$child_file"; then kill "$(cat "$child_file")" 2>/dev/null || :; fi
         exit 0 ;;
@@ -56,15 +71,44 @@ flock -n 9 || exit 0
 printf '%s\n' "$$" > "$pid_file"
 child=
 sleeper=
+watchdog_loop=
 stopping=false
 terminate() {
     stopping=true
+    if [[ -n "$watchdog_loop" ]]; then kill "$watchdog_loop" 2>/dev/null || :; fi
     if [[ -n "$child" ]]; then kill "$child" 2>/dev/null || :; fi
     if [[ -n "$sleeper" ]]; then kill "$sleeper" 2>/dev/null || :; fi
 }
-cleanup() { rm -f "$pid_file" "$child_file"; }
+cleanup() { if [[ -n "$watchdog_loop" ]]; then wait "$watchdog_loop" 2>/dev/null || :; fi; rm -f "$pid_file" "$child_file" "$watchdog_loop_file"; }
 trap terminate TERM INT
 trap cleanup EXIT
+if [[ "$WHATSAPP_MCP_WATCHDOG_DISABLE" != 1 && -x "$watchdog" ]]; then
+    (
+        exec 9>&-
+        watcher=
+        nap=
+        finish_watchdog() {
+            trap - TERM INT
+            [[ -z "$watcher" ]] || kill "$watcher" 2>/dev/null || :
+            [[ -z "$nap" ]] || kill "$nap" 2>/dev/null || :
+            [[ -z "$watcher" ]] || wait "$watcher" 2>/dev/null || :
+            exit 0
+        }
+        trap finish_watchdog TERM INT
+        while :; do
+            "$watchdog" &
+            watcher=$!
+            wait "$watcher" || :
+            watcher=
+            sleep 10 &
+            nap=$!
+            wait "$nap" || :
+            nap=
+        done
+    ) &
+    watchdog_loop=$!
+    printf '%s\n' "$watchdog_loop" > "$watchdog_loop_file"
+fi
 backoff=2
 while ! $stopping; do
     log=$log_dir/daemon.log

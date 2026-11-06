@@ -658,3 +658,23 @@ func TestWebhookAndDaemonFlagsOverrideEnvironment(t *testing.T) {
 		t.Fatalf("config %+v", cfg)
 	}
 }
+
+func TestHTTPPortFallback(t *testing.T) {
+	if cfg := mustLoad(t, nil); cfg.HTTPPortFallback != 0 {
+		t.Fatal(cfg.HTTPPortFallback)
+	}
+	if cfg := mustLoad(t, map[string]string{config.EnvHTTPPortFallback: "3"}); cfg.HTTPPortFallback != 3 {
+		t.Fatal(cfg.HTTPPortFallback)
+	}
+	if cfg := mustLoad(t, map[string]string{config.EnvHTTPPortFallback: "3"}, "--http-port-fallback", "50"); cfg.HTTPPortFallback != 50 {
+		t.Fatal(cfg.HTTPPortFallback)
+	}
+	for _, v := range []string{"-1", "51", "invalid"} {
+		if _, err := load(t, map[string]string{config.EnvHTTPPortFallback: v}); err == nil {
+			t.Fatalf("accepted env %s", v)
+		}
+		if _, err := load(t, nil, "--http-port-fallback", v); err == nil {
+			t.Fatalf("accepted flag %s", v)
+		}
+	}
+}

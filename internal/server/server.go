@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -178,4 +180,33 @@ func Serve(ctx context.Context, ln net.Listener, h http.Handler) error {
 	}
 	<-errCh
 	return nil
+}
+
+// ListenFallback tries consecutive loopback ports only after EADDRINUSE.
+func ListenFallback(addr string, fallback int, log *slog.Logger) (net.Listener, error) {
+	if fallback < 0 || fallback > 50 {
+		return nil, errors.New("http port fallback must be 0..50")
+	}
+	if err := config.ValidateHTTPAddr(addr); err != nil {
+		return nil, err
+	}
+	host, port, _ := net.SplitHostPort(addr)
+	first, _ := strconv.Atoi(port)
+	last := min(first+fallback, 65535)
+	var busy []string
+	for n := first; n <= last; n++ {
+		candidate := net.JoinHostPort(host, strconv.Itoa(n))
+		ln, err := Listen(candidate)
+		if err == nil {
+			if len(busy) > 0 && log != nil {
+				log.Warn("HTTP ports busy; using fallback", "busy_ports", busy, "http_addr", ln.Addr().String())
+			}
+			return ln, nil
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, err
+		}
+		busy = append(busy, strconv.Itoa(n))
+	}
+	return nil, fmt.Errorf("listen on HTTP ports %s:%d..%d: address already in use (all in use)", host, first, last)
 }

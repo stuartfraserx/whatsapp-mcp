@@ -79,6 +79,7 @@ Usage:
   whatsapp-mcp [serve] [flags]        run the MCP server (default)
   whatsapp-mcp pair [--wait 2m] [flags]
                                       link this server to WhatsApp and ingest history
+  whatsapp-mcp health [--data-dir DIR] [--timeout 10s]
   whatsapp-mcp status [flags]         show pairing state without connecting
   whatsapp-mcp unpair [--delete-data] [--force] [flags]
                                       log out; with --delete-data also remove local data
@@ -115,6 +116,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = e.serve(ctx, rest)
 	case "pair":
 		err = e.pair(ctx, rest)
+	case "health":
+		return e.health(ctx, rest)
 	case "status":
 		err = e.status(ctx, rest)
 	case "unpair":
@@ -310,7 +313,7 @@ func (e env) serve(ctx context.Context, args []string) error {
 			if lock != nil {
 				lock.Close()
 			}
-			return e.proxy(ctx, cfg, log, lockErr == nil)
+			return e.proxy(ctx, cfg, log)
 		}
 	}
 	if lockErr != nil {
@@ -326,6 +329,14 @@ func (e env) serve(ctx context.Context, args []string) error {
 		if httpToken, err = resolveHTTPToken(cfg, log); err != nil {
 			return err
 		}
+	}
+	var ln net.Listener
+	if cfg.Transport == config.TransportHTTP {
+		ln, err = server.ListenFallback(cfg.HTTPAddr, cfg.HTTPPortFallback, log)
+		if err != nil {
+			return err
+		}
+		defer ln.Close()
 	}
 	res, err := openResources(ctx, cfg, log, terminalOrNil(e.stderr))
 	if err != nil {
@@ -365,10 +376,6 @@ func (e env) serve(ctx context.Context, args []string) error {
 
 	switch cfg.Transport {
 	case config.TransportHTTP:
-		var ln net.Listener
-		if ln, err = server.Listen(cfg.HTTPAddr); err != nil {
-			return err
-		}
 		tokenFile := cfg.HTTPTokenFile
 		if tokenFile == "" {
 			tokenFile = cfg.HTTPTokenPath()

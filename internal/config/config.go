@@ -40,6 +40,7 @@ const (
 	EnvDownloadDir        = "WHATSAPP_MCP_DOWNLOAD_DIR"
 	EnvOutboxDir          = "WHATSAPP_MCP_OUTBOX_DIR"
 	EnvTransport          = "WHATSAPP_MCP_TRANSPORT"
+	EnvHTTPPortFallback   = "WHATSAPP_MCP_HTTP_PORT_FALLBACK"
 	EnvHTTPAddr           = "WHATSAPP_MCP_HTTP_ADDR"
 	EnvHTTPToken          = "WHATSAPP_MCP_HTTP_TOKEN"
 	EnvHTTPTokenFil       = "WHATSAPP_MCP_HTTP_TOKEN_FILE"
@@ -59,6 +60,7 @@ type Config struct {
 	WebhookConfig, DaemonStartCommand, HTTPTokenFile string
 	Transport                                        Transport
 	HTTPAddr, HTTPToken                              string
+	HTTPPortFallback                                 int
 	HTTPNoAuth                                       bool
 	SendEnabled                                      bool
 	Allowlist                                        []string
@@ -126,6 +128,14 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 		hourlyDefault = n
 	}
 
+	fallbackDefault := 0
+	if v, ok := env(EnvHTTPPortFallback); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: invalid integer", EnvHTTPPortFallback)
+		}
+		fallbackDefault = n
+	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	webhookConfig := fs.String("webhook-config", envOr(EnvWebhookConfig, ""), "private inbound webhook config file (empty disables notifier)")
@@ -134,6 +144,7 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 	downloadDir := fs.String("download-dir", envOr(EnvDownloadDir, ""), "directory for downloaded media (default <data-dir>/downloads)")
 	outboxDir := fs.String("outbox-dir", envOr(EnvOutboxDir, ""), "directory send_file may read from (default <data-dir>/outbox)")
 	transport := fs.String("transport", envOr(EnvTransport, string(TransportStdio)), "MCP transport: stdio or http")
+	fallback := fs.Int("http-port-fallback", fallbackDefault, "additional HTTP ports to try when busy (0..50)")
 	httpAddr := fs.String("http-addr", envOr(EnvHTTPAddr, defaultHTTPAddr), "HTTP listen address; host must be 127.0.0.1")
 	httpNoAuth := fs.Bool("http-no-auth", noAuthDefault, "disable HTTP bearer authentication (loopback only)")
 	sendEnabled := fs.Bool("send-enabled", sendDefault, "register the send_message, send_file, edit_message and delete_message tools")
@@ -154,6 +165,7 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 		HTTPTokenFile:      envOr(EnvHTTPTokenFil, ""),
 		Transport:          Transport(strings.ToLower(strings.TrimSpace(*transport))),
 		HTTPAddr:           strings.TrimSpace(*httpAddr),
+		HTTPPortFallback:   *fallback,
 		HTTPNoAuth:         *httpNoAuth,
 		SendEnabled:        *sendEnabled,
 		Allowlist:          splitList(*allowlist),
@@ -161,6 +173,9 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 		RateHourly:         *rateHourly,
 	}
 
+	if cfg.HTTPPortFallback < 0 || cfg.HTTPPortFallback > 50 {
+		return Config{}, errors.New("http port fallback must be 0..50")
+	}
 	if cfg.DaemonStartCommand != "" && !filepath.IsAbs(cfg.DaemonStartCommand) {
 		return Config{}, errors.New("daemon start command must be an absolute executable path")
 	}

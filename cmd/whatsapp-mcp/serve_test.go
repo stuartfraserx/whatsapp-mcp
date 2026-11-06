@@ -537,11 +537,11 @@ func TestServeHTTPListenFailureIsRuntimeError(t *testing.T) {
 
 	got := runCLI(t, env, "serve", "--transport", "http", "--http-addr", ln.Addr().String())
 
-	if got.code != 1 || !strings.Contains(got.stderr, "listen on") {
+	if got.code != 1 || !strings.Contains(got.stderr, "all in use") {
 		t.Fatalf("got %+v", got)
 	}
-	if tc.closeCalls.Load() != 1 {
-		t.Fatalf("resources must be released after a listen failure, close=%d", tc.closeCalls.Load())
+	if tc.closeCalls.Load() != 0 || tc.disconnectCalls.Load() != 0 || tc.ConnectCalls() != 0 {
+		t.Fatalf("resources must not be opened after a listen failure, close=%d", tc.closeCalls.Load())
 	}
 }
 

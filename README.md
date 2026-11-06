@@ -698,3 +698,75 @@ This project adapts ideas and portions of code from
 [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) (MIT, Copyright
 (c) 2025 Luke Harries). A reference copy is kept in `reference/lharries-whatsapp-mcp/`.
 See [NOTICE.md](NOTICE.md) for attribution and third-party dependency licenses.
+
+### Daemon health and port fallback
+
+`whatsapp-mcp health --data-dir /path/to/data --timeout 10s` reads private
+`daemon.json` and its token file, then calls only `connection_status` over MCP.
+It never starts a daemon, connects to WhatsApp directly, or takes the instance
+lock. `WHATSAPP_MCP_DATA_DIR` supplies the default data directory. Stdout is one
+JSON line with `ok`, `reachable`, `http_addr`, `daemon_pid`, `state`, `paired`,
+`webhook_failed`, `webhook_enabled`, and `error`. Exit codes are 0 for connected
+and paired, 1 for unhealthy/unavailable, and 2 for invalid arguments. Credentials
+and webhook URLs are omitted.
+
+For HTTP serving, `--http-port-fallback N` (or
+`WHATSAPP_MCP_HTTP_PORT_FALLBACK`, default 0, range 0–50) tries the next N ports
+on the same `127.0.0.1` address when binding fails because a port is occupied.
+The daemon logs the busy ports and selected address and publishes the actual
+address in `daemon.json`. It binds before opening the WhatsApp client. An
+exhausted range fails without interfering with the process holding a port.
+
+Forwarded tool calls are retried only after a dial failure or a rejected missing
+MCP session. A lost response can mean a send/edit/delete already happened; the
+proxy returns a tool error asking you to check before retrying. Only the read-only
+`connection_status` may be retried after an ambiguous connection failure.
+
+### Supervisor watchdog
+
+`scripts/whatsapp-mcp-supervise.sh` starts `whatsapp-mcp-watchdog` next to itself
+(or the repository's `whatsapp-mcp-watchdog.sh`). Set `WHATSAPP_MCP_WATCHDOG` to
+an executable path to override it, or `WHATSAPP_MCP_WATCHDOG_DISABLE=1` to disable
+it. These keys, `WHATSAPP_MCP_HTTP_PORT_FALLBACK`,
+`WHATSAPP_MCP_WATCHDOG_INTERVAL` (seconds, default 300),
+`WHATSAPP_MCP_WATCHDOG_RECHECK` (seconds, default 60),
+`WHATSAPP_MCP_WATCHDOG_GRACE` (seconds, default 90; 0 disables), and
+`WHATSAPP_MCP_ALERT_WEBHOOK_CONFIG` are accepted in the private supervisor env
+file and exported to children. `status` reports watchdog status and the published
+HTTP address; `stop` stops the watchdog too.
+
+The Bash watchdog requires `jq`, `ss`, `flock`, and `curl` plus Linux `/proc`.
+Before its first cycle it waits for the grace period, and disconnected or unpaired
+daemons younger than that period are logged as starting. Dead PIDs and missing
+listeners remain unhealthy. One-shot tests skip the initial wait unless grace is
+explicitly set. Fallback-port notices are informational and include the preferred
+port owner.
+It checks the supervised daemon PID, TCP listener ownership, MCP health, webhook
+failure counter growth, and new bind errors in the daemon log. It requests at
+most one restart per outage, then rechecks and emits one down event. Recovery
+emits one recovered event. Persistent state and a single-instance lock live in
+`WHATSAPP_MCP_LOG_DIR` (default `<data-dir>/logs`); watchdog.log rotates at 5 MiB.
+Only a daemon PID whose command arguments identify `serve --transport http` may
+receive TERM. The watchdog never re-pairs or deletes data. Listener ownership
+requires permission to inspect process information; unavailable ownership is
+reported as unhealthy. Increasing webhook failures indicate delivery failures,
+not necessarily a broken WhatsApp session. The watchdog relies on its supervisor
+to respawn a terminated daemon, and PID/cmdline inspection cannot eliminate PID
+reuse races.
+
+An optional alert config is a regular, non-symlink file owned by the current user
+with mode 0600:
+
+```json
+{"url":"https://alerts.example.net/whatsapp","authorization_header":"Authorization: Bearer YOUR_SECRET"}
+```
+
+The default path is `/home/box/secrets/whatsapp-laura-alert-webhook.json`; override
+it for your installation. The watchdog passes the URL and authorization header
+to curl through stdin, and logs event JSON and delivery status without these
+secrets. Missing/invalid configuration logs the event locally and counts it as
+reported for that outage. Delivery has a 15-second timeout and is attempted once
+per event; failed alerts are not queued. Alerts contain `event`, `reason`,
+`state`, `paired`, `port_owner`, and UTC `ts`; recovery also has `down_since`.
+`WHATSAPP_MCP_HEALTH_CMD` and `WHATSAPP_MCP_WATCHDOG_ONESHOT=1` are test overrides.
+Run `bash scripts/test-watchdog.sh` for isolated fake-process checks.

@@ -42,6 +42,8 @@ with mode `0700`. Files inside are created with mode `0600`.
 | `WHATSAPP_MCP_ALLOWLIST` | `--allowlist` | empty | Comma-separated JIDs or phone numbers. Empty means any recipient. |
 | `WHATSAPP_MCP_RATE_INTERVAL` | `--rate-interval` | `3s` | Minimum time between two sends. Must be at least `1s`. |
 | `WHATSAPP_MCP_RATE_HOURLY` | `--rate-hourly` | `60` | Maximum sends in any trailing hour. Range 1 to 1000. |
+| `WHATSAPP_MCP_WEBHOOK_CONFIG` | `--webhook-config` | empty | Private JSON inbound webhook configuration; empty disables the notifier entirely. |
+| `WHATSAPP_MCP_DAEMON_START_COMMAND` | `--daemon-start-command` | empty | Absolute path to the supervisor executable, saved in daemon discovery for automatic startup. |
 | `WHATSAPP_MCP_LOG_LEVEL` | `--log-level` | `info` | `debug`, `info`, `warn`, or `error`. |
 
 Flags override environment variables.
@@ -71,6 +73,10 @@ Files in the data directory:
 | `whatsapp.db` (plus `-wal`, `-shm`) | WhatsApp session (linked-device keys). Treat as a secret. |
 | `messages.db` (plus `-wal`, `-shm`) | Local copy of chats and messages. |
 | `http-token` | Auto-generated HTTP bearer token (mode `0600`). Created on the first HTTP start without a configured token. Treat as a secret. |
+| `notifier.db` | Separate persistent webhook dedupe store; `messages.db` keeps its existing schema. |
+| `instance.lock` | Single-owner session lock, held by serve, pair and unpair. |
+| `daemon.json` | Private HTTP daemon address, token file path, PID, start time and optional start command. Contains no token. |
+| `daemon-http-token` | Private proxy token file when HTTP authentication was supplied directly through the environment. |
 | `pairing-qr.png` | Pairing QR code. Exists only while pairing is pending. |
 | `downloads/` | Media saved by `download_media`. |
 | `outbox/` | Files you place here for `send_file`. |
@@ -166,6 +172,198 @@ systemctl --user enable --now whatsapp-mcp
 
 Pair the device with `whatsapp-mcp pair` before enabling the unit. The service
 does not show a QR code, but it logs the PNG path while the account is unpaired.
+
+## Inbound webhook (optional)
+
+Set `WHATSAPP_MCP_WEBHOOK_CONFIG=/absolute/path/webhook.json` or pass
+`--webhook-config`. With no path, there are no notifier workers or database, and
+`connection_status.inbound_webhook.configured` is false. The notifier only runs
+while `serve` or `pair` is running.
+
+Create the file with mode **0600 or 0400**. Symlinks, non-regular files and other
+permissions are refused. A missing or invalid file disables delivery and reports
+`config_error`; it does not prevent the MCP server from starting. Example:
+
+```json
+{
+  "enabled": false,
+  "url": "",
+  "authorization_header": "",
+  "allowed_senders": ["573133992340"],
+  "allowed_groups": [],
+  "debounce_seconds": 20,
+  "text_preview_chars": 280
+}
+```
+
+Fill in the HTTPS URL and authorization value, then set `enabled` to true.
+HTTP is allowed only for `localhost` and `127.0.0.1`. The authorization value may
+include a leading `Authorization:` label, which is stripped. Redirects are not
+followed. The header and URL path/query are never logged or included in MCP
+status. Protect the file: it contains credentials and controls where message
+previews are sent.
+
+The file's modification time, size and permissions are checked every ten seconds.
+A change reloads it and discards pending batches and queued deliveries from the
+previous configuration. Invalid replacements leave delivery disabled. An already
+in-flight HTTP request may finish.
+
+An empty sender list allows all direct chats. Entries accept international phone
+numbers with formatting, a `+` or `00` prefix, bare digits, or user JIDs. Both chat
+and sender are checked, including locally known LID-to-phone mappings. Groups
+require an exact `@g.us` entry in `allowed_groups`; sender restrictions do not
+apply to allowed groups.
+
+Only live, newly stored text/media messages enter the notifier. Messages from the
+account itself, status broadcasts, messages older than process startup, and
+non-message events are ignored. History batches, reactions, edits, revokes and
+view-once content never enter the live notification path. Local name resolution
+uses the same saved contact/chat/push-name rules as the read tools and performs
+no network lookup.
+
+The first accepted message starts a per-chat debounce window (default 20 seconds,
+range 1–600). Messages during that window replace the payload with the latest
+arrival and increment `count`; they do not extend the deadline. Preview limits
+count Unicode characters (default 280, maximum 2000). A media message without a
+caption has an empty preview.
+
+Each request has `Content-Type: application/json` and
+`User-Agent: whatsapp-mcp-notifier`. Example payload:
+
+```json
+{
+  "event": "whatsapp.message",
+  "chat_jid": "573133992340@s.whatsapp.net",
+  "chat_name": "Saved contact",
+  "is_group": false,
+  "sender_jid": "573133992340@s.whatsapp.net",
+  "sender_name": "Saved contact",
+  "message_id": "latest-message-id",
+  "ts": "2026-11-06T12:00:00Z",
+  "text_preview": "Message text or media caption",
+  "media_type": "",
+  "count": 2,
+  "account_jid": "own-account@s.whatsapp.net"
+}
+```
+
+Dedupe keys `(chat_jid, message_id)` are recorded when accepted into a batch and
+persist across restarts in `<data>/notifier.db`. Rows older than 30 days are
+pruned at startup. This is a best-effort wakeup service: a crash, shutdown, full
+queue, failed delivery or configuration change can lose notifications, and seen
+messages are not replayed. Message storage is independent of delivery.
+
+A single worker sends requests with a ten-second HTTP timeout. Network failures,
+429 and 5xx responses retry, up to five total attempts, with 2, 4, 8 and 16 second
+waits. Other unsuccessful responses fail immediately. The ingress queue, delivery
+queue and pending chat count are bounded at 256 each; saturation increments
+`dropped`. Shutdown discards pending batches and allows an active POST up to five
+seconds before cancellation, then closes the dedupe database.
+
+`connection_status.inbound_webhook` reports `configured`, effective `enabled`,
+optional `config_error`, `url_host` (host only), `sent`, `failed`, `dropped`,
+`retried`, `deduped`, `pending_chats`, `ignored` counters by reason,
+`last_sent_at`, scrubbed `last_error`, and `last_status_code`. Ignored reasons
+include `disabled`, `from_me`, `status_broadcast`, `before_start`, `not_message`,
+`sender_not_allowed`, and `group_not_allowed`. Events discarded upstream never
+reach these counters.
+
+## One daemon, many stdio clients
+
+On Unix, `serve`, `pair` and `unpair` take an exclusive, non-blocking
+`<data>/instance.lock` before opening the WhatsApp database. Stop the daemon
+before pairing or unpairing. The `status` command stays lock-free and reads the
+session database without migration or creating local state. Platforms without
+Unix flock support use a no-op lock fallback.
+
+HTTP mode writes `<data>/daemon.json` with mode 0600 after binding the listener:
+
+```json
+{
+  "http_addr": "127.0.0.1:8765",
+  "token_file": "/absolute/path/to/http-token",
+  "pid": 123,
+  "started_at": "2026-11-06T12:00:00Z",
+  "start_command": ["/absolute/path/to/whatsapp-mcp-supervise.sh"]
+}
+```
+
+`start_command` is optional; set it with `--daemon-start-command` or
+`WHATSAPP_MCP_DAEMON_START_COMMAND`. Only an absolute executable owned by the
+current user, without group/world write permissions, can be launched. Discovery
+is kept after shutdown so a later stdio process knows a daemon is expected.
+
+A stdio process that finds the session lock held becomes a thin MCP proxy. It
+opens neither WhatsApp nor message databases. Tools and their schemas come from
+the daemon over Streamable HTTP; calls and their results/errors are forwarded.
+The upstream session is reopened lazily after transport failure, retrying once.
+The token is read from the discovery `token_file`, falling back to
+`WHATSAPP_MCP_HTTP_TOKEN_FILE`, then `<data>/http-token`; it must be a regular
+0600 file. HTTP mode with an environment-only token writes a private
+`daemon-http-token` file for discovery. Use authenticated HTTP mode for proxying.
+All stdio protocol output stays on stdout and logs stay on stderr.
+
+If the lock is free and discovery exists, stdio launches its optional start
+command detached, waits up to 30 seconds for ownership and an answering HTTP
+endpoint, then proxies. It never falls back to connecting WhatsApp directly.
+When unavailable, tools return `whatsapp daemon is not running; see <log path>`;
+`connection_status` still works and returns `state: "daemon_unavailable"`.
+With no discovery file and a free lock, stdio retains standalone behavior. To
+return to standalone operation, stop the daemon and remove `daemon.json`.
+
+A WhatsApp stream replaced by another client is logged at WARN and increments
+`connection_status.stream_replaced_count`; `last_disconnect_reason` records the
+cause. The lock owner reconnects after 5, 10, 20 seconds and so on, capped at five
+minutes. Ten minutes of stable connection reset the delay. Normal disconnects
+continue to use whatsmeow's built-in reconnect behavior. Keepalive timeouts and
+connection failures also produce warnings.
+
+### Supervisor
+
+`scripts/whatsapp-mcp-supervise.sh` is a Bash supervisor for Linux (`flock`,
+`setsid`, `nohup`, `stat` and `readlink` must be installed). It reads a regular
+0600 file at `${WHATSAPP_MCP_ENV_FILE:-$HOME/.config/whatsapp-mcp-laura/env}`.
+Lines are literal `KEY=VALUE` data, with no shell expansion or surrounding quotes;
+blank lines and lines starting with `#` are ignored. Supported variables:
+
+| Variable | Meaning |
+|---|---|
+| `WHATSAPP_MCP_ENV_FILE` | Override the supervisor env file path (set before invoking the script). |
+| `WHATSAPP_MCP_DATA_DIR` | Required data directory. |
+| `WHATSAPP_MCP_HTTP_ADDR` | Optional HTTP listener address; default `127.0.0.1:8765`. |
+| `WHATSAPP_MCP_HTTP_TOKEN_FILE` | Optional private HTTP bearer token file. |
+| `WHATSAPP_MCP_WEBHOOK_CONFIG` | Optional notifier JSON file. |
+| `WHATSAPP_MCP_BIN` | Required absolute path to the built binary. |
+| `WHATSAPP_MCP_LOG_DIR` | Log/PID directory; default `<data>/logs`. |
+| `WHATSAPP_MCP_DAEMON_START_COMMAND` | Supervisor executable path; defaults to the script's resolved absolute path. |
+
+Example private env file:
+
+```text
+WHATSAPP_MCP_DATA_DIR=/home/YOUR_USER/.local/share/whatsapp-mcp
+WHATSAPP_MCP_BIN=/home/YOUR_USER/bin/whatsapp-mcp
+WHATSAPP_MCP_HTTP_ADDR=127.0.0.1:8765
+WHATSAPP_MCP_HTTP_TOKEN_FILE=/home/YOUR_USER/.local/share/whatsapp-mcp/http-token
+WHATSAPP_MCP_WEBHOOK_CONFIG=/home/YOUR_USER/.config/whatsapp-mcp/webhook.json
+WHATSAPP_MCP_LOG_DIR=/home/YOUR_USER/.local/state/whatsapp-mcp
+```
+
+If specifying a token file, create it with mode 0600 first. Otherwise omit that
+line to let the daemon generate its default token.
+
+```sh
+scripts/whatsapp-mcp-supervise.sh             # detach and return immediately
+scripts/whatsapp-mcp-supervise.sh --foreground
+scripts/whatsapp-mcp-supervise.sh status
+scripts/whatsapp-mcp-supervise.sh stop
+```
+
+A lock on `<log-dir>/supervisor.lock` admits one supervisor; a second exits
+quietly. The supervisor records `supervisor.pid` and `daemon.pid`, appends daemon
+output to `daemon.log`, and rotates a log larger than 10 MiB to `daemon.log.1`
+before the next start. Exit restarts use a 2-second backoff doubling to 60 seconds,
+reset after five minutes of uptime. SIGTERM is forwarded to the child and ends
+the loop. `status` reports the two processes; `stop` terminates both.
 
 ## Connect OpenBot
 
@@ -406,8 +604,9 @@ risk described in the warning above.
 ## Privacy and security
 
 - **Local only.** All state lives in the data directory. The server has no telemetry.
-- **One network peer.** The only remote endpoint is WhatsApp, through whatsmeow.
-  The only local peer is the MCP client you connect.
+- **Network access.** WhatsApp is reached through whatsmeow. An explicitly configured
+  inbound webhook can send message previews to its HTTPS endpoint. Stdio proxies
+  communicate only with the loopback daemon.
 - **Log redaction.** At `info` and above, logs do not contain message bodies,
   full phone numbers, or full JIDs. Phone numbers and JIDs are masked.
 - **HTTP is loopback-only.** The listener binds to `127.0.0.1`. The server also
@@ -423,9 +622,8 @@ risk described in the warning above.
   names (`*.db`, `whatsapp-mcp-data/`, `pairing-qr.png`, `downloads/`, `outbox/`),
   and a test checks that these rules stay in place.
 - **Checked by tests.** A dependency allowlist test fails if a module outside
-  the approved list appears in `go.mod`. An AST test forbids HTTP client calls
-  in this project's code. Only the server package and tests may import
-  `net/http`.
+  the approved list appears in `go.mod`. An AST test confines HTTP client calls to the notifier and daemon proxy.
+  Other production packages cannot make outbound HTTP requests.
 
 ## Unpair and delete data
 
@@ -445,7 +643,7 @@ Also delete the local data:
 whatsapp-mcp unpair --delete-data
 ```
 
-`--delete-data` removes `whatsapp.db*`, `messages.db*` and `pairing-qr.png` from
+`--delete-data` removes `whatsapp.db*`, `messages.db*`, `notifier.db` and `pairing-qr.png` from
 the data directory. It removes the `downloads/` and `outbox/` folders only when
 they are inside the data directory; a custom download or outbox directory elsewhere
 is never touched.
@@ -483,7 +681,9 @@ The domain package (`internal/wa`) has no whatsmeow import. It talks to WhatsApp
 - `internal/store`: local message store (SQLite, `messages.db`). Text search folds case for ASCII letters only: `é` does not match `É`.
 - `internal/session`: connects client events, the store, and pairing state.
 - `internal/tools`: MCP tool definitions and handlers.
-- `internal/server`: stdio and HTTP transports.
+- `internal/server`: stdio, HTTP and daemon proxy transports.
+- `internal/notify`: inbound webhook configuration, debounce, persistent dedupe and delivery.
+- `internal/instance`, `internal/daemon`, `internal/securefile`: session ownership, daemon discovery/startup and private-file reads.
 - `internal/ratelimit` and `internal/sendpolicy`: send rate limits and allowlist.
 - `internal/config`, `internal/datadir`, `internal/qr`, `internal/redact`: configuration, file safety, QR output, and log redaction.
 - `cmd/whatsapp-mcp`: CLI entry point.

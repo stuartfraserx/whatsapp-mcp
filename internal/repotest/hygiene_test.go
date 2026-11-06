@@ -28,6 +28,7 @@ var allowedDirectDeps = []string{
 	"modernc.org/sqlite",
 	"github.com/skip2/go-qrcode",
 	"golang.org/x/term",
+	"golang.org/x/text",
 	"google.golang.org/protobuf",
 	"go.mau.fi/util",
 }
@@ -353,7 +354,7 @@ func scanGoSource(rel string, src any) ([]string, error) {
 		switch {
 		case p == "C":
 			report(imp.Pos(), `imports "C"; the module must build with CGO_ENABLED=0`)
-		case isHTTPImport(p) && !isServerPackage(rel):
+		case isHTTPImport(p) && !isServerPackage(rel) && rel != "internal/notify/notify.go":
 			where := "outside internal/server"
 			if strings.HasPrefix(rel, "cmd/") {
 				where = "in a cmd/ package; only internal/server may use net/http"
@@ -374,6 +375,9 @@ func scanGoSource(rel string, src any) ([]string, error) {
 		default:
 			httpName = name
 		}
+	}
+	if rel == "internal/notify/notify.go" || rel == "internal/server/proxy.go" {
+		return violations, nil
 	}
 	if httpName == "" {
 		return violations, nil

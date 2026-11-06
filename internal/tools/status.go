@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/fmflurry/whatsapp-mcp/internal/notify"
 	"github.com/fmflurry/whatsapp-mcp/internal/session"
 	"github.com/fmflurry/whatsapp-mcp/internal/wa"
 )
@@ -17,13 +18,16 @@ const qrWait = 30 * time.Second
 type emptyInput struct{}
 
 type connectionStatusOutput struct {
-	State               string  `json:"state"`
-	Paired              bool    `json:"paired"`
-	AccountJID          string  `json:"account_jid,omitempty"`
-	SendEnabled         bool    `json:"send_enabled"`
-	AllowlistActive     bool    `json:"allowlist_active"`
-	RateIntervalSeconds float64 `json:"rate_interval_seconds,omitempty"`
-	RateHourlyCap       int     `json:"rate_hourly_cap,omitempty"`
+	InboundWebhook       notify.Status `json:"inbound_webhook"`
+	StreamReplacedCount  uint64        `json:"stream_replaced_count"`
+	LastDisconnectReason string        `json:"last_disconnect_reason"`
+	State                string        `json:"state"`
+	Paired               bool          `json:"paired"`
+	AccountJID           string        `json:"account_jid,omitempty"`
+	SendEnabled          bool          `json:"send_enabled"`
+	AllowlistActive      bool          `json:"allowlist_active"`
+	RateIntervalSeconds  float64       `json:"rate_interval_seconds,omitempty"`
+	RateHourlyCap        int           `json:"rate_hourly_cap,omitempty"`
 
 	ContactSync *contactSyncOut `json:"contact_sync,omitempty"`
 }
@@ -110,11 +114,17 @@ func (h *handlers) resyncContacts(ctx context.Context, _ *mcp.CallToolRequest, _
 func (h *handlers) connectionStatus(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, connectionStatusOutput, error) {
 	st := h.Session.Status()
 	out := connectionStatusOutput{
-		State:           string(st.State),
-		Paired:          st.Paired,
-		AccountJID:      st.AccountJID,
-		SendEnabled:     h.SendEnabled,
-		AllowlistActive: h.AllowlistActive || (h.Policy != nil && !h.Policy.Allowlist.Empty()),
+		InboundWebhook:       notify.Status{Ignored: map[string]uint64{}},
+		StreamReplacedCount:  st.StreamReplacedCount,
+		LastDisconnectReason: st.LastDisconnectReason,
+		State:                string(st.State),
+		Paired:               st.Paired,
+		AccountJID:           st.AccountJID,
+		SendEnabled:          h.SendEnabled,
+		AllowlistActive:      h.AllowlistActive || (h.Policy != nil && !h.Policy.Allowlist.Empty()),
+	}
+	if h.Notifier != nil {
+		out.InboundWebhook = h.Notifier.Status()
 	}
 	if h.SendEnabled {
 		out.RateIntervalSeconds = h.RateInterval.Seconds()

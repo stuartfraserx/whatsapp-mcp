@@ -42,10 +42,11 @@ var osVersion = [3]uint32{0, 1, 0}
 
 // Client implements wa.Client on top of a whatsmeow multi-device session.
 type Client struct {
-	cli    *whatsmeow.Client
-	db     *sql.DB
-	dbPath string
-	log    *slog.Logger
+	reconnect *reconnecter
+	cli       *whatsmeow.Client
+	db        *sql.DB
+	dbPath    string
+	log       *slog.Logger
 
 	lifeCtx    context.Context
 	lifeCancel context.CancelFunc
@@ -114,6 +115,7 @@ func Open(ctx context.Context, sessionDBPath string, log *slog.Logger) (*Client,
 		lifeCtx:    lifeCtx,
 		lifeCancel: lifeCancel,
 	}
+	c.reconnect = newReconnecter(log, c.Connect)
 	c.cli.InitialAutoReconnect = true
 	// Full syncs then report every address-book entry as an events.Contact,
 	// whose LID/phone-number pair onContactAction records.
@@ -136,8 +138,8 @@ func (c *Client) Paired() bool { return c.cli.Store.ID != nil }
 
 // Close disconnects and releases the session database.
 func (c *Client) Close() error {
-	c.Disconnect()
 	c.lifeCancel()
+	c.Disconnect()
 	err := c.db.Close()
 	if herr := c.hardenFiles(); err == nil {
 		err = herr
@@ -368,18 +370,28 @@ func (c *Client) Status() wa.Status {
 	qrActive, connecting, loggedOut := c.qrActive, c.connecting, c.loggedOut
 	c.mu.Unlock()
 
+	st := wa.Status{}
+	if c.reconnect != nil {
+		c.reconnect.mu.Lock()
+		st.StreamReplacedCount = c.reconnect.count
+		st.LastDisconnectReason = c.reconnect.reason
+		c.reconnect.mu.Unlock()
+	}
 	id := c.cli.Store.ID
 	if id == nil {
 		switch {
 		case qrActive:
-			return wa.Status{State: wa.StateNeedsQR}
+			st.State = wa.StateNeedsQR
 		case loggedOut:
-			return wa.Status{State: wa.StateLoggedOut}
+			st.State = wa.StateLoggedOut
 		default:
-			return wa.Status{State: wa.StateDisconnected}
+			st.State = wa.StateDisconnected
 		}
+		return st
 	}
-	st := wa.Status{Paired: true, AccountJID: id.ToNonAD().String()}
+	st.Paired = true
+	st.AccountJID = id.ToNonAD().String()
+
 	switch {
 	case c.cli.IsConnected() && c.cli.IsLoggedIn():
 		st.State = wa.StateConnected

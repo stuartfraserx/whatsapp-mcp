@@ -74,7 +74,19 @@ func (c *Client) handleEvent(raw any) {
 		c.onHistorySync(evt)
 	case *events.Connected:
 		c.onConnected()
+	case *events.StreamReplaced:
+		c.log.Warn("whatsapp stream replaced by another client using the same session; reconnecting with backoff")
+		c.reconnect.replaced(c.lifeCtx)
+		c.emit(wa.StreamReplacedEvent{})
+	case *events.KeepAliveTimeout:
+		c.log.Warn("whatsapp keepalive timeout")
+	case *events.ConnectFailure:
+		c.log.Warn("whatsapp connection failure", "reason", redact.Scrub(evt.Reason.String()))
+		c.reconnect.disconnected("connect_failure")
 	case *events.Disconnected:
+		if c.reconnect != nil {
+			c.reconnect.disconnected("disconnected")
+		}
 		c.setConnecting(false)
 		c.emit(wa.DisconnectedEvent{})
 	case *events.LoggedOut:
@@ -188,6 +200,9 @@ func historyAlt(pn string) types.JID {
 
 func (c *Client) onConnected() {
 	c.setConnected()
+	if c.reconnect != nil {
+		c.reconnect.connected()
+	}
 	c.emit(wa.ConnectedEvent{})
 	go c.publishGroupNames()
 	go c.publishContactNames()
@@ -229,5 +244,12 @@ func (c *Client) publishGroupNames() {
 
 func (c *Client) onLoggedOut(evt *events.LoggedOut) {
 	c.setLoggedOut()
+	if c.reconnect != nil {
+		c.reconnect.mu.Lock()
+		c.reconnect.loggedOut = true
+		c.reconnect.reason = "logged_out"
+		c.reconnect.connectedAt = time.Time{}
+		c.reconnect.mu.Unlock()
+	}
 	c.emit(wa.LoggedOutEvent{Reason: fmt.Sprint(evt.Reason)})
 }

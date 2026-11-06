@@ -185,6 +185,7 @@ func TestOpenClientFailureIsRuntimeError(t *testing.T) {
 	for _, cmd := range []string{"status", "pair", "unpair", "serve"} {
 		t.Run(cmd, func(t *testing.T) {
 			env, _ := baseEnv(t)
+			setVar(t, &readStatus, func(context.Context, string) (wa.Status, error) { return wa.Status{}, errors.New("session db locked") })
 			setVar(t, &openClient, func(context.Context, string, *slog.Logger) (clientCloser, error) {
 				return nil, errors.New("session db locked")
 			})
@@ -202,6 +203,9 @@ func TestOpenClientFailureIsRuntimeError(t *testing.T) {
 }
 
 func TestRuntimeErrorsScrubPhoneNumbers(t *testing.T) {
+	setVar(t, &readStatus, func(context.Context, string) (wa.Status, error) {
+		return wa.Status{}, errors.New("device " + testAccountJID + " rejected")
+	})
 	env, _ := baseEnv(t)
 	setVar(t, &openClient, func(context.Context, string, *slog.Logger) (clientCloser, error) {
 		return nil, errors.New("device " + testAccountJID + " rejected")
@@ -223,9 +227,9 @@ func TestDirectoriesAreCreatedPrivate(t *testing.T) {
 	env[config.EnvDataDir] = dataDir
 	env[config.EnvDownloadDir] = downloadDir
 	env[config.EnvOutboxDir] = outboxDir
-	useClient(t, newTestClient(false))
+	useClient(t, newTestClient(true))
 
-	got := runCLI(t, env, "status")
+	got := runCLI(t, env, "pair")
 
 	if got.code != 0 {
 		t.Fatalf("got %+v", got)
@@ -243,9 +247,9 @@ func TestDefaultDownloadAndOutboxLiveUnderDataDirAndExistingDirsAreTightened(t *
 	if err := os.Chmod(dataDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	useClient(t, newTestClient(false))
+	useClient(t, newTestClient(true))
 
-	got := runCLI(t, env, "status")
+	got := runCLI(t, env, "pair")
 
 	if got.code != 0 {
 		t.Fatalf("got %+v", got)
@@ -289,8 +293,8 @@ func TestStatusUnpaired(t *testing.T) {
 	if tc.ConnectCalls() != 0 {
 		t.Fatal("status must never connect")
 	}
-	if tc.closeCalls.Load() != 1 {
-		t.Fatalf("Close calls = %d, want 1", tc.closeCalls.Load())
+	if tc.closeCalls.Load() != 0 {
+		t.Fatalf("status opened a client: Close calls = %d", tc.closeCalls.Load())
 	}
 }
 

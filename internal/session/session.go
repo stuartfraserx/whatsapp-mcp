@@ -38,6 +38,7 @@ type Options struct {
 	QR     qr.Presenter
 	Log    *slog.Logger
 	Clock  ratelimit.Clock
+	Notify interface{ Submit(wa.Message) }
 }
 
 // Session owns the client event handler. All methods are safe for concurrent
@@ -48,6 +49,7 @@ type Session struct {
 	qr     qr.Presenter
 	log    *slog.Logger
 	clock  ratelimit.Clock
+	notify interface{ Submit(wa.Message) }
 
 	mu         sync.Mutex
 	code       string
@@ -64,6 +66,7 @@ type Session struct {
 func New(o Options) *Session {
 	s := &Session{
 		client:    o.Client,
+		notify:    o.Notify,
 		store:     o.Store,
 		qr:        o.QR,
 		log:       o.Log,
@@ -133,6 +136,9 @@ func (s *Session) saveMessage(m wa.Message) {
 	if err := s.store.SaveMessage(ctx, m); err != nil {
 		s.logStoreError("save_message", err)
 		return
+	}
+	if s.notify != nil {
+		s.notify.Submit(m)
 	}
 	s.log.Debug("message stored", "chat", redact.JID(m.ChatJID))
 }

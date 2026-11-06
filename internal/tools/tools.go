@@ -10,6 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/fmflurry/whatsapp-mcp/internal/notify"
 	"github.com/fmflurry/whatsapp-mcp/internal/sendpolicy"
 	"github.com/fmflurry/whatsapp-mcp/internal/session"
 	"github.com/fmflurry/whatsapp-mcp/internal/store"
@@ -29,10 +30,11 @@ const (
 // Deps are the collaborators the tools need. RateInterval, RateHourly and
 // AllowlistActive are informational and surface in connection_status.
 type Deps struct {
-	Client  wa.Client
-	Store   *store.Store
-	Session *session.Session
-	Policy  *sendpolicy.Policy
+	Notifier interface{ Status() notify.Status }
+	Client   wa.Client
+	Store    *store.Store
+	Session  *session.Session
+	Policy   *sendpolicy.Policy
 
 	SendEnabled bool
 	DataDir     string

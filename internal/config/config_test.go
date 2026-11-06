@@ -640,3 +640,21 @@ func TestHTTPTokenPath(t *testing.T) {
 		t.Errorf("HTTPTokenPath() = %q, want %q", cfg.HTTPTokenPath(), want)
 	}
 }
+
+func TestWebhookAndDaemonFlagsOverrideEnvironment(t *testing.T) {
+	cfg, err := config.Load("serve", []string{"--webhook-config", "/tmp/flag-webhook.json", "--daemon-start-command", "/tmp/flag-supervisor"}, func(k string) (string, bool) {
+		switch k {
+		case "WHATSAPP_MCP_WEBHOOK_CONFIG":
+			return "/tmp/env-webhook.json", true
+		case "WHATSAPP_MCP_DAEMON_START_COMMAND":
+			return "/tmp/env-supervisor", true
+		}
+		return "", false
+	}, t.TempDir(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebhookConfig != "/tmp/flag-webhook.json" || cfg.DaemonStartCommand != "/tmp/flag-supervisor" {
+		t.Fatalf("config %+v", cfg)
+	}
+}

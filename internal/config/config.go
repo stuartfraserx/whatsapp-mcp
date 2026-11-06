@@ -36,32 +36,35 @@ const (
 
 // Environment variable names.
 const (
-	EnvDataDir      = "WHATSAPP_MCP_DATA_DIR"
-	EnvDownloadDir  = "WHATSAPP_MCP_DOWNLOAD_DIR"
-	EnvOutboxDir    = "WHATSAPP_MCP_OUTBOX_DIR"
-	EnvTransport    = "WHATSAPP_MCP_TRANSPORT"
-	EnvHTTPAddr     = "WHATSAPP_MCP_HTTP_ADDR"
-	EnvHTTPToken    = "WHATSAPP_MCP_HTTP_TOKEN"
-	EnvHTTPTokenFil = "WHATSAPP_MCP_HTTP_TOKEN_FILE"
-	EnvHTTPNoAuth   = "WHATSAPP_MCP_HTTP_NO_AUTH"
-	EnvSendEnabled  = "WHATSAPP_MCP_SEND_ENABLED"
-	EnvAllowlist    = "WHATSAPP_MCP_ALLOWLIST"
-	EnvRateInterval = "WHATSAPP_MCP_RATE_INTERVAL"
-	EnvRateHourly   = "WHATSAPP_MCP_RATE_HOURLY"
-	EnvLogLevel     = "WHATSAPP_MCP_LOG_LEVEL"
+	EnvDataDir            = "WHATSAPP_MCP_DATA_DIR"
+	EnvDownloadDir        = "WHATSAPP_MCP_DOWNLOAD_DIR"
+	EnvOutboxDir          = "WHATSAPP_MCP_OUTBOX_DIR"
+	EnvTransport          = "WHATSAPP_MCP_TRANSPORT"
+	EnvHTTPAddr           = "WHATSAPP_MCP_HTTP_ADDR"
+	EnvHTTPToken          = "WHATSAPP_MCP_HTTP_TOKEN"
+	EnvHTTPTokenFil       = "WHATSAPP_MCP_HTTP_TOKEN_FILE"
+	EnvHTTPNoAuth         = "WHATSAPP_MCP_HTTP_NO_AUTH"
+	EnvSendEnabled        = "WHATSAPP_MCP_SEND_ENABLED"
+	EnvAllowlist          = "WHATSAPP_MCP_ALLOWLIST"
+	EnvRateInterval       = "WHATSAPP_MCP_RATE_INTERVAL"
+	EnvRateHourly         = "WHATSAPP_MCP_RATE_HOURLY"
+	EnvLogLevel           = "WHATSAPP_MCP_LOG_LEVEL"
+	EnvWebhookConfig      = "WHATSAPP_MCP_WEBHOOK_CONFIG"
+	EnvDaemonStartCommand = "WHATSAPP_MCP_DAEMON_START_COMMAND"
 )
 
 // Config is the validated server configuration.
 type Config struct {
-	DataDir, DownloadDir, OutboxDir string
-	Transport                       Transport
-	HTTPAddr, HTTPToken             string
-	HTTPNoAuth                      bool
-	SendEnabled                     bool
-	Allowlist                       []string
-	RateInterval                    time.Duration
-	RateHourly                      int
-	LogLevel                        slog.Level
+	DataDir, DownloadDir, OutboxDir                  string
+	WebhookConfig, DaemonStartCommand, HTTPTokenFile string
+	Transport                                        Transport
+	HTTPAddr, HTTPToken                              string
+	HTTPNoAuth                                       bool
+	SendEnabled                                      bool
+	Allowlist                                        []string
+	RateInterval                                     time.Duration
+	RateHourly                                       int
+	LogLevel                                         slog.Level
 }
 
 // ReadFile reads the HTTP token file. It is a variable so tests can replace it.
@@ -125,6 +128,8 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	webhookConfig := fs.String("webhook-config", envOr(EnvWebhookConfig, ""), "private inbound webhook config file (empty disables notifier)")
+	daemonStart := fs.String("daemon-start-command", envOr(EnvDaemonStartCommand, ""), "absolute path to daemon supervisor script")
 	dataDir := fs.String("data-dir", dataDefault, "directory for session and message databases")
 	downloadDir := fs.String("download-dir", envOr(EnvDownloadDir, ""), "directory for downloaded media (default <data-dir>/downloads)")
 	outboxDir := fs.String("outbox-dir", envOr(EnvOutboxDir, ""), "directory send_file may read from (default <data-dir>/outbox)")
@@ -144,15 +149,21 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 	}
 
 	cfg := Config{
-		Transport:    Transport(strings.ToLower(strings.TrimSpace(*transport))),
-		HTTPAddr:     strings.TrimSpace(*httpAddr),
-		HTTPNoAuth:   *httpNoAuth,
-		SendEnabled:  *sendEnabled,
-		Allowlist:    splitList(*allowlist),
-		RateInterval: *rateInterval,
-		RateHourly:   *rateHourly,
+		WebhookConfig:      *webhookConfig,
+		DaemonStartCommand: *daemonStart,
+		HTTPTokenFile:      envOr(EnvHTTPTokenFil, ""),
+		Transport:          Transport(strings.ToLower(strings.TrimSpace(*transport))),
+		HTTPAddr:           strings.TrimSpace(*httpAddr),
+		HTTPNoAuth:         *httpNoAuth,
+		SendEnabled:        *sendEnabled,
+		Allowlist:          splitList(*allowlist),
+		RateInterval:       *rateInterval,
+		RateHourly:         *rateHourly,
 	}
 
+	if cfg.DaemonStartCommand != "" && !filepath.IsAbs(cfg.DaemonStartCommand) {
+		return Config{}, errors.New("daemon start command must be an absolute executable path")
+	}
 	var err error
 	if cfg.DataDir, err = absDir(*dataDir); err != nil {
 		return Config{}, fmt.Errorf("data dir: %w", err)

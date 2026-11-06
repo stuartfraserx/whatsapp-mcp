@@ -461,3 +461,24 @@ func phoneDigits(q string) string {
 	}
 	return b.String()
 }
+
+// MessageNames uses the tools' local name resolution for webhook enrichment.
+func MessageNames(ctx context.Context, client wa.Client, st *store.Store, m wa.Message) (chatName, senderName string, pn map[string]string) {
+	contacts, _ := client.Contacts(ctx)
+	d := newDirectory(contacts)
+	pn = make(map[string]string)
+	for _, c := range contacts {
+		if c.LID != "" {
+			pn[c.LID] = cmp.Or(c.PN, userJIDOf(c.JID, wa.ServerUser))
+		}
+	}
+	chats, _, _ := st.ListChats(ctx, store.ChatQuery{Query: m.ChatJID, Limit: 200})
+	chat := store.ChatSummary{JID: m.ChatJID, IsGroup: wa.IsGroup(m.ChatJID)}
+	for _, c := range chats {
+		if c.JID == m.ChatJID {
+			chat = c
+			break
+		}
+	}
+	return d.chatName(chat), d.senderName(m), pn
+}

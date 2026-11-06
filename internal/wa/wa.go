@@ -102,9 +102,11 @@ const (
 
 // Status is a snapshot of the client connection.
 type Status struct {
-	State      ConnState
-	AccountJID string
-	Paired     bool
+	StreamReplacedCount  uint64
+	LastDisconnectReason string
+	State                ConnState
+	AccountJID           string
+	Paired               bool
 }
 
 // MediaType is the kind of a media attachment.
@@ -258,3 +260,8 @@ var (
 	// retried blindly.
 	ErrNotSent = errors.New("message was not sent")
 )
+
+// StreamReplacedEvent announces another client using this session.
+type StreamReplacedEvent struct{}
+
+func (StreamReplacedEvent) isEvent() {}

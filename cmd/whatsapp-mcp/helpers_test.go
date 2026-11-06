@@ -96,11 +96,13 @@ func useClient(t *testing.T, c clientCloser) *openRecorder {
 	t.Helper()
 	rec := &openRecorder{}
 	prev := openClient
+	previousStatus := readStatus
+	readStatus = func(context.Context, string) (wa.Status, error) { return c.Status(), nil }
 	openClient = func(context.Context, string, *slog.Logger) (clientCloser, error) {
 		rec.calls.Add(1)
 		return c, nil
 	}
-	t.Cleanup(func() { openClient = prev })
+	t.Cleanup(func() { openClient = prev; readStatus = previousStatus })
 	return rec
 }
 

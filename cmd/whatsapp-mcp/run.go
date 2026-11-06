@@ -17,7 +17,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/fmflurry/whatsapp-mcp/internal/config"
+	"github.com/fmflurry/whatsapp-mcp/internal/daemon"
 	"github.com/fmflurry/whatsapp-mcp/internal/datadir"
+	"github.com/fmflurry/whatsapp-mcp/internal/instance"
+	"github.com/fmflurry/whatsapp-mcp/internal/notify"
 	"github.com/fmflurry/whatsapp-mcp/internal/qr"
 	"github.com/fmflurry/whatsapp-mcp/internal/ratelimit"
 	"github.com/fmflurry/whatsapp-mcp/internal/redact"
@@ -32,6 +35,7 @@ import (
 
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
+var processStartedAt = time.Now()
 
 const (
 	exitOK    = 0
@@ -51,6 +55,7 @@ var (
 		}
 		return c, nil
 	}
+	readStatus  = wameow.ReadStatus
 	userHomeDir = os.UserHomeDir
 	isTerminal  = func(w io.Writer) bool {
 		f, ok := w.(*os.File)
@@ -218,9 +223,11 @@ func (e env) loadConfig(name string, args []string) (config.Config, *slog.Logger
 		}
 		return config.Config{}, nil, usageError{err}
 	}
-	for _, dir := range []string{cfg.DataDir, cfg.DownloadDir, cfg.OutboxDir} {
-		if err := datadir.EnsureDir(dir); err != nil {
-			return config.Config{}, nil, err
+	if name != "status" {
+		for _, dir := range []string{cfg.DataDir, cfg.DownloadDir, cfg.OutboxDir} {
+			if err := datadir.EnsureDir(dir); err != nil {
+				return config.Config{}, nil, err
+			}
 		}
 	}
 	log := slog.New(slog.NewTextHandler(e.stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
@@ -236,10 +243,11 @@ func terminalOrNil(w io.Writer) io.Writer {
 }
 
 type resources struct {
-	client  clientCloser
-	store   *store.Store
-	session *session.Session
-	log     *slog.Logger
+	notifier *notify.Notifier
+	client   clientCloser
+	store    *store.Store
+	session  *session.Session
+	log      *slog.Logger
 }
 
 func openResources(ctx context.Context, cfg config.Config, log *slog.Logger, terminal io.Writer) (*resources, error) {
@@ -252,17 +260,33 @@ func openResources(ctx context.Context, cfg config.Config, log *slog.Logger, ter
 		_ = st.Close()
 		return nil, fmt.Errorf("open whatsapp session: %w", err)
 	}
+	if owner, ok := client.(interface{ SetInstanceOwner(bool) }); ok {
+		owner.SetInstanceOwner(true)
+	}
+	notifier, err := notify.New(ctx, notify.Options{ConfigPath: cfg.WebhookConfig, DataDir: cfg.DataDir, StartedAt: processStartedAt, Log: log, Resolve: func(ctx context.Context, m wa.Message) notify.Details {
+		ctx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		chat, sender, pn := tools.MessageNames(ctx, client, st, m)
+		return notify.Details{ChatName: chat, SenderName: sender, PN: pn, AccountJID: client.Status().AccountJID}
+	}})
+	if err != nil {
+		client.Close()
+		st.Close()
+		return nil, fmt.Errorf("open notifier: %w", err)
+	}
 	sess := session.New(session.Options{
+		Notify: notifier,
 		Client: client,
 		Store:  st,
 		QR:     qr.Presenter{PNGPath: cfg.QRPNGPath(), Terminal: terminal},
 		Log:    log,
 		Clock:  ratelimit.SystemClock{},
 	})
-	return &resources{client: client, store: st, session: sess, log: log}, nil
+	return &resources{notifier: notifier, client: client, store: st, session: sess, log: log}, nil
 }
 
 func (r *resources) close() {
+	r.notifier.Close()
 	r.client.Disconnect()
 	if err := r.client.Close(); err != nil {
 		r.log.Warn("close whatsapp session", "error", redact.Scrub(err.Error()))
@@ -277,6 +301,22 @@ func (e env) serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	lock, lockErr := instance.Acquire(cfg.DataDir)
+	if cfg.Transport == config.TransportStdio {
+		_, discoveryErr := os.Lstat(daemon.Path(cfg.DataDir))
+		if errors.Is(lockErr, instance.ErrHeld) || (lockErr == nil && !errors.Is(discoveryErr, os.ErrNotExist)) {
+			if lock != nil {
+				lock.Close()
+			}
+			return e.proxy(ctx, cfg, log, lockErr == nil)
+		}
+	}
+	if lockErr != nil {
+		return lockErr
+	}
+	defer lock.Close()
 	allowlist, err := sendpolicy.ParseAllowlist(cfg.Allowlist)
 	if err != nil {
 		return usageError{err}
@@ -294,9 +334,10 @@ func (e env) serve(ctx context.Context, args []string) error {
 	defer res.close()
 
 	deps := tools.Deps{
-		Client:  res.client,
-		Store:   res.store,
-		Session: res.session,
+		Notifier: res.notifier,
+		Client:   res.client,
+		Store:    res.store,
+		Session:  res.session,
 		Policy: &sendpolicy.Policy{
 			Enabled:   cfg.SendEnabled,
 			Allowlist: allowlist,
@@ -328,6 +369,31 @@ func (e env) serve(ctx context.Context, args []string) error {
 		if ln, err = server.Listen(cfg.HTTPAddr); err != nil {
 			return err
 		}
+		tokenFile := cfg.HTTPTokenFile
+		if tokenFile == "" {
+			tokenFile = cfg.HTTPTokenPath()
+			if cfg.HTTPToken != "" {
+				tokenFile = filepath.Join(cfg.DataDir, "daemon-http-token")
+			}
+			if httpToken != "" {
+				if err := datadir.WriteFileAtomic(tokenFile, []byte(httpToken+"\n")); err != nil {
+					ln.Close()
+					return err
+				}
+			}
+		}
+		tokenFile, _ = filepath.Abs(tokenFile)
+		info := daemon.Info{HTTPAddr: ln.Addr().String(), TokenFile: tokenFile}
+		if cfg.DaemonStartCommand != "" {
+			info.StartCommand = []string{cfg.DaemonStartCommand}
+		}
+		if dir, ok := e.lookup("WHATSAPP_MCP_LOG_DIR"); ok {
+			info.LogPath = filepath.Join(dir, "daemon.log")
+		}
+		if err := daemon.Write(cfg.DataDir, info); err != nil {
+			ln.Close()
+			return err
+		}
 		log.Info("listening on http://" + ln.Addr().String() + "/mcp")
 		err = server.Serve(ctx, ln, server.NewHTTPHandler(srv, httpToken))
 	default:
@@ -355,6 +421,11 @@ func (e env) pair(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	lock, err := instance.Acquire(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	res, err := openResources(ctx, cfg, log, terminalOrNil(e.stdout))
 	if err != nil {
 		return err
@@ -396,18 +467,17 @@ func (e env) pair(ctx context.Context, args []string) error {
 }
 
 func (e env) status(ctx context.Context, args []string) error {
-	cfg, log, err := e.loadConfig("status", args)
+	cfg, _, err := e.loadConfig("status", args)
 	if err != nil {
 		return err
 	}
-	client, err := openClient(ctx, cfg.SessionDBPath(), log)
+	st, err := readStatus(ctx, cfg.SessionDBPath())
 	if err != nil {
 		return fmt.Errorf("open whatsapp session: %w", err)
 	}
-	defer func() { _ = client.Close() }()
 
-	if client.Paired() {
-		fmt.Fprintf(e.stdout, "paired: yes (%s)\n", redact.JID(client.Status().AccountJID))
+	if st.Paired {
+		fmt.Fprintf(e.stdout, "paired: yes (%s)\n", redact.JID(st.AccountJID))
 	} else {
 		fmt.Fprintln(e.stdout, "paired: no")
 	}
@@ -434,6 +504,11 @@ func (e env) unpair(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	lock, err := instance.Acquire(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	loggedOut, logoutErr := e.logout(ctx, cfg, log)
 	if deleteData {
 		if loggedOut || force {
@@ -521,7 +596,7 @@ func waitConnected(ctx context.Context, c wa.Client) bool {
 
 func removeData(w io.Writer, cfg config.Config) error {
 	var errs []error
-	files := []string{cfg.SessionDBPath(), cfg.MessagesDBPath(), cfg.QRPNGPath()}
+	files := []string{cfg.SessionDBPath(), cfg.MessagesDBPath(), cfg.QRPNGPath(), filepath.Join(cfg.DataDir, "notifier.db")}
 	for _, db := range []string{cfg.SessionDBPath(), cfg.MessagesDBPath()} {
 		files = append(files, db+"-wal", db+"-shm")
 	}

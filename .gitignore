@@ -17,3 +17,6 @@ pairing-qr.png
 *.pem
 *.key
 coverage.out
+
+http-token
+daemon-http-token

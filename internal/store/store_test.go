@@ -1192,3 +1192,27 @@ func TestUpdateChatNamesOnlyFillsEmptyNamesOfExistingChats(t *testing.T) {
 		t.Errorf("chat names = %v, want alice named, bob kept, no new chat", names)
 	}
 }
+
+func TestHistoryReplayPreservesMessageMutation(t *testing.T) {
+	s, _ := openStore(t)
+	original := msg(alice, "m", t0, "original")
+	original.FromMe = true
+	save(t, s, original)
+	ctx := context.Background()
+	if err := s.MarkEditedOwn(ctx, alice, "m", "edited", t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	save(t, s, original)
+	got, err := s.GetMessage(ctx, alice, "m")
+	if err != nil || !got.Edited || got.Text != "edited" {
+		t.Fatalf("replayed edit: %+v %v", got, err)
+	}
+	if err := s.MarkRevokedOwn(ctx, alice, "m", t0.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	save(t, s, original)
+	got, err = s.GetMessage(ctx, alice, "m")
+	if err != nil || !got.Revoked || !got.Edited || got.Text != "edited" || !got.Timestamp.Equal(t0) {
+		t.Fatalf("replayed revoke: %+v %v", got, err)
+	}
+}

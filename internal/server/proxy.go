@@ -78,7 +78,7 @@ func NewProxy(ctx context.Context, version string, info daemon.Info, tokenFallba
 		}
 	}
 	if len(ts) == 0 {
-		for _, name := range []string{"list_chats", "search_contacts", "list_messages", "get_message_context", "download_media", "send_message", "send_file", "connection_status", "show_pairing_qr", "resync_contacts"} {
+		for _, name := range []string{"list_chats", "search_contacts", "list_messages", "get_message_context", "download_media", "send_message", "send_file", "edit_message", "delete_message", "connection_status", "show_pairing_qr", "resync_contacts"} {
 			ts = append(ts, &mcp.Tool{Name: name, Description: "WhatsApp daemon tool", InputSchema: map[string]any{"type": "object"}})
 		}
 	}

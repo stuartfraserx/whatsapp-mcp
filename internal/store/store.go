@@ -106,12 +106,12 @@ func (s *Store) SaveMessage(ctx context.Context, m wa.Message) error {
 }
 
 // ApplyEdit replaces the text of the stored message id in chatJID sent by
-// senderJID. It changes nothing else and does nothing when no such message
+// senderJID. It marks the message edited and does nothing when no such message
 // exists.
 func (s *Store) ApplyEdit(ctx context.Context, chatJID, id, senderJID, newText string) error {
 	_, err := s.db.ExecContext(ctx,
-		"UPDATE messages SET text = ? WHERE chat_jid = ? AND id = ? AND sender_jid = ?",
-		newText, chatJID, id, senderJID)
+		"UPDATE messages SET text = ?, edited = 1, edited_at = ? WHERE chat_jid = ? AND id = ? AND sender_jid = ? AND revoked = 0",
+		newText, timeToInt(time.Now()), chatJID, id, senderJID)
 	if err != nil {
 		return fmt.Errorf("apply edit: %w", err)
 	}
@@ -194,13 +194,13 @@ ON CONFLICT(jid) DO UPDATE SET last_message_time = MAX(chats.last_message_time, 
 	_, err = ex.ExecContext(ctx, `
 INSERT INTO messages (chat_jid, id, sender_jid, sender_name, ts, from_me, text,
 	media_type, mime_type, file_name, direct_path, url,
-	media_key, file_sha256, file_enc_sha256, file_length)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	media_key, file_sha256, file_enc_sha256, file_length, edited, edited_at, revoked, revoked_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(chat_jid, id) DO UPDATE SET
 	sender_name = CASE WHEN excluded.sender_name <> '' THEN excluded.sender_name ELSE messages.sender_name END,
 	ts = excluded.ts,
 	from_me = excluded.from_me,
-	text = excluded.text,
+	text = CASE WHEN messages.edited = 1 OR messages.revoked = 1 THEN messages.text ELSE excluded.text END,
 	media_type = excluded.media_type,
 	mime_type = excluded.mime_type,
 	file_name = excluded.file_name,
@@ -209,11 +209,15 @@ ON CONFLICT(chat_jid, id) DO UPDATE SET
 	media_key = excluded.media_key,
 	file_sha256 = excluded.file_sha256,
 	file_enc_sha256 = excluded.file_enc_sha256,
-	file_length = excluded.file_length
+	file_length = excluded.file_length,
+	edited = MAX(messages.edited, excluded.edited),
+	edited_at = MAX(messages.edited_at, excluded.edited_at),
+	revoked = MAX(messages.revoked, excluded.revoked),
+	revoked_at = MAX(messages.revoked_at, excluded.revoked_at)
 WHERE messages.sender_jid = excluded.sender_jid`,
 		m.ChatJID, m.ID, m.SenderJID, m.SenderName, ts, boolInt(m.FromMe), m.Text,
 		string(media.Type), media.MimeType, media.FileName, media.DirectPath, media.URL,
-		media.MediaKey, media.FileSHA256, media.FileEncSHA256, int64(media.FileLength))
+		media.MediaKey, media.FileSHA256, media.FileEncSHA256, int64(media.FileLength), boolInt(m.Edited), timeToInt(m.EditedAt), boolInt(m.Revoked), timeToInt(m.RevokedAt))
 	if err != nil {
 		return fmt.Errorf("save message: %w", err)
 	}
@@ -331,7 +335,7 @@ type MessageQuery struct {
 const messageSelect = `
 SELECT chat_jid, id, sender_jid, sender_name, ts, from_me, text,
 	media_type, mime_type, file_name, direct_path, url,
-	media_key, file_sha256, file_enc_sha256, file_length
+	media_key, file_sha256, file_enc_sha256, file_length, edited, edited_at, revoked, revoked_at
 FROM messages`
 
 // ListMessages returns messages matching q and whether more exist beyond the
@@ -484,22 +488,25 @@ func (s *Store) queryMessages(ctx context.Context, query string, args ...any) ([
 
 func scanMessage(rows *sql.Rows) (wa.Message, error) {
 	var (
-		m          wa.Message
-		ts         int64
-		fromMe     int64
-		length     int64
-		mediaType  string
-		media      wa.Media
-		mediaKey   []byte
-		sha, encSH []byte
+		m                   wa.Message
+		ts                  int64
+		editedAt, revokedAt int64
+		fromMe              int64
+		length              int64
+		mediaType           string
+		media               wa.Media
+		mediaKey            []byte
+		sha, encSH          []byte
 	)
 	err := rows.Scan(&m.ChatJID, &m.ID, &m.SenderJID, &m.SenderName, &ts, &fromMe, &m.Text,
 		&mediaType, &media.MimeType, &media.FileName, &media.DirectPath, &media.URL,
-		&mediaKey, &sha, &encSH, &length)
+		&mediaKey, &sha, &encSH, &length, &m.Edited, &editedAt, &m.Revoked, &revokedAt)
 	if err != nil {
 		return wa.Message{}, fmt.Errorf("scan message: %w", err)
 	}
 	m.Timestamp = intToTime(ts)
+	m.EditedAt = intToTime(editedAt)
+	m.RevokedAt = intToTime(revokedAt)
 	m.FromMe = fromMe != 0
 	if mediaType != "" {
 		media.Type = wa.MediaType(mediaType)
@@ -545,4 +552,22 @@ func intToTime(n int64) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(0, n).UTC()
+}
+
+// MarkEditedOwn records a successful outgoing edit without changing the original timestamp.
+func (s *Store) MarkEditedOwn(ctx context.Context, chat, id, text string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE messages SET text = ?, edited = 1, edited_at = ? WHERE chat_jid = ? AND id = ? AND from_me = 1 AND revoked = 0", text, timeToInt(at), chat, id)
+	if err != nil {
+		return fmt.Errorf("mark own message edited: %w", err)
+	}
+	return nil
+}
+
+// MarkRevokedOwn keeps the message row and text while recording a successful revoke.
+func (s *Store) MarkRevokedOwn(ctx context.Context, chat, id string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE messages SET revoked = 1, revoked_at = ? WHERE chat_jid = ? AND id = ? AND from_me = 1", timeToInt(at), chat, id)
+	if err != nil {
+		return fmt.Errorf("mark own message revoked: %w", err)
+	}
+	return nil
 }

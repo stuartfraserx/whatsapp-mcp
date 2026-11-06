@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS chats (
@@ -40,8 +40,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_id ON messages (id);
 `
 
 func migrate(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 	var version int
-	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if version > schemaVersion {
@@ -50,14 +55,16 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	if version == schemaVersion {
 		return nil
 	}
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration: %w", err)
+	if version == 0 {
+		if _, err := tx.ExecContext(ctx, schemaV1); err != nil {
+			return fmt.Errorf("apply schema: %w", err)
+		}
 	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, schemaV1); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN revoked_at INTEGER NOT NULL DEFAULT 0;`); err != nil {
+		return fmt.Errorf("migrate messages to v2: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("set schema version: %w", err)

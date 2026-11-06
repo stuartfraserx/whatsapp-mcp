@@ -136,6 +136,10 @@ type Media struct {
 
 // Message is a chat message. Text holds the body or the media caption.
 type Message struct {
+	Edited     bool
+	EditedAt   time.Time
+	Revoked    bool
+	RevokedAt  time.Time
 	ID         string
 	ChatJID    string
 	SenderJID  string
@@ -239,6 +243,8 @@ type Client interface {
 	Connect(ctx context.Context) error
 	Disconnect()
 	Status() Status
+	EditText(ctx context.Context, chatJID, id, text string) (SentMessage, error)
+	RevokeMessage(ctx context.Context, chatJID, id string) (SentMessage, error)
 	SendText(ctx context.Context, chatJID, text string) (SentMessage, error)
 	SendFile(ctx context.Context, chatJID string, f OutgoingFile) (SentMessage, error)
 	DownloadMedia(ctx context.Context, m Media) ([]byte, error)

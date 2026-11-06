@@ -136,7 +136,7 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 	transport := fs.String("transport", envOr(EnvTransport, string(TransportStdio)), "MCP transport: stdio or http")
 	httpAddr := fs.String("http-addr", envOr(EnvHTTPAddr, defaultHTTPAddr), "HTTP listen address; host must be 127.0.0.1")
 	httpNoAuth := fs.Bool("http-no-auth", noAuthDefault, "disable HTTP bearer authentication (loopback only)")
-	sendEnabled := fs.Bool("send-enabled", sendDefault, "register the send_message and send_file tools")
+	sendEnabled := fs.Bool("send-enabled", sendDefault, "register the send_message, send_file, edit_message and delete_message tools")
 	allowlist := fs.String("allowlist", envOr(EnvAllowlist, ""), "comma-separated JIDs or phone numbers allowed as recipients (empty = any)")
 	rateInterval := fs.Duration("rate-interval", intervalDefault, "minimum interval between sends (>= 1s)")
 	rateHourly := fs.Int("rate-hourly", hourlyDefault, "maximum sends per trailing hour (1..1000)")

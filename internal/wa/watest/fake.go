@@ -14,10 +14,12 @@ import (
 
 // SentRecord is an outgoing message captured by the Fake.
 type SentRecord struct {
-	ChatJID string
-	Text    string
-	File    *wa.OutgoingFile
-	At      time.Time
+	MessageID string
+	Operation string
+	ChatJID   string
+	Text      string
+	File      *wa.OutgoingFile
+	At        time.Time
 }
 
 // Fake is a mutex-protected wa.Client that records sends instead of delivering
@@ -262,4 +264,14 @@ func (f *Fake) Logout(context.Context) error {
 	f.logoutCalls++
 	f.status = wa.Status{State: wa.StateLoggedOut}
 	return nil
+}
+
+// EditText records an outgoing edit.
+func (f *Fake) EditText(_ context.Context, chatJID, id, text string) (wa.SentMessage, error) {
+	return f.record(SentRecord{ChatJID: chatJID, MessageID: id, Text: text, Operation: "edit"})
+}
+
+// RevokeMessage records an outgoing revoke.
+func (f *Fake) RevokeMessage(_ context.Context, chatJID, id string) (wa.SentMessage, error) {
+	return f.record(SentRecord{ChatJID: chatJID, MessageID: id, Operation: "revoke"})
 }

@@ -120,6 +120,10 @@ type listMessagesInput struct {
 }
 
 type messageOut struct {
+	Edited     bool   `json:"edited,omitempty"`
+	Revoked    bool   `json:"revoked,omitempty"`
+	EditedAt   string `json:"edited_at,omitempty"`
+	RevokedAt  string `json:"revoked_at,omitempty"`
 	ID         string `json:"id"`
 	ChatJID    string `json:"chat_jid"`
 	SenderJID  string `json:"sender_jid"`
@@ -133,6 +137,7 @@ type messageOut struct {
 
 func toMessageOut(m wa.Message, dir *directory) messageOut {
 	out := messageOut{
+		Edited: m.Edited, Revoked: m.Revoked, EditedAt: formatTime(m.EditedAt), RevokedAt: formatTime(m.RevokedAt),
 		ID:         m.ID,
 		ChatJID:    m.ChatJID,
 		SenderJID:  m.SenderJID,

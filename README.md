@@ -420,13 +420,15 @@ Omit the `headers` block only when you run with `WHATSAPP_MCP_HTTP_NO_AUTH=true`
 | `list_messages` | read | Search messages by chat, sender, text, or time range. Paginated. |
 | `get_message_context` | read | Return a message with the messages before and after it in the same chat. |
 | `download_media` | read | Download an attachment into the download directory. Fetches from WhatsApp and writes a local file. Refuses media larger than 100 MiB. |
+| `edit_message` | send | Edit an own text message within 15 minutes, visible to everyone in the chat. Requires an explicit user request. |
+| `delete_message` | send | Delete an own message for everyone within 48 hours. Requires an explicit user request. |
 | `send_message` | send | Send a text message. |
 | `send_file` | send | Send a file from the outbox or download directory, with an optional caption. Maximum 64 MiB. |
 | `connection_status` | status | Report connection state, pairing, send settings, rate limits, and the address-book sync state (`contact_sync`, counts only). |
 | `show_pairing_qr` | status | Return the pairing PNG path when unpaired. Never returns the QR payload. |
 | `resync_contacts` | status | Ask WhatsApp to send the address book (saved contact names) and chat settings to this linked device again, in the background. Sends no message. |
 
-`send_message` and `send_file` are registered only when `WHATSAPP_MCP_SEND_ENABLED`
+`send_message`, `send_file`, `edit_message` and `delete_message` are registered only when `WHATSAPP_MCP_SEND_ENABLED`
 is `true`. With sending disabled, the server exposes the read and status tools only.
 
 Both send tools carry this warning in their descriptions:

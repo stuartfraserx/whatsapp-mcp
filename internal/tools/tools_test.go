@@ -149,6 +149,7 @@ func newEnv(t *testing.T, mods ...func(*options)) *env {
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "0"}, nil)
 	tools.Register(srv, tools.Deps{
+		Now:           e.clock.Now,
 		Client:        e.fake,
 		Store:         st,
 		Session:       e.sess,
@@ -330,13 +331,13 @@ func listTools(t *testing.T, e *env) map[string]*mcp.Tool {
 	return byName
 }
 
-func TestListToolsWithSendEnabledExposesAllTenTools(t *testing.T) {
+func TestListToolsWithSendEnabledExposesAllTwelveTools(t *testing.T) {
 	e := newEnv(t)
 	got := listTools(t, e)
 
 	want := []string{
 		"list_chats", "search_contacts", "list_messages", "get_message_context", "download_media",
-		"send_message", "send_file", "connection_status", "show_pairing_qr", "resync_contacts",
+		"send_message", "send_file", "edit_message", "delete_message", "connection_status", "show_pairing_qr", "resync_contacts",
 	}
 	names := make([]string, 0, len(got))
 	for n := range got {
@@ -356,7 +357,7 @@ func TestListToolsWithSendDisabledOmitsSendTools(t *testing.T) {
 	if len(got) != 8 {
 		t.Fatalf("got %d tools, want 8: %v", len(got), got)
 	}
-	for _, name := range []string{"send_message", "send_file"} {
+	for _, name := range []string{"send_message", "send_file", "edit_message", "delete_message"} {
 		if _, present := got[name]; present {
 			t.Errorf("%s must not be registered when sending is disabled", name)
 		}
@@ -413,6 +414,8 @@ func TestEveryInputPropertyIsDocumentedAndRequiredFieldsDeclared(t *testing.T) {
 		"download_media":      {"message_id"},
 		"send_message":        {"recipient", "text"},
 		"send_file":           {"recipient", "path"},
+		"edit_message":        {"chat", "message_id", "text"},
+		"delete_message":      {"chat", "message_id"},
 	}
 
 	for name, tl := range got {

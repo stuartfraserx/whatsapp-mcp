@@ -230,8 +230,8 @@ func TestNewMCPServerAdvertisesIdentityAndTools(t *testing.T) {
 		t.Fatalf("instructions = %q, want the send safety guidance", instr)
 	}
 	list, err := cs.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 10 {
-		t.Fatalf("tools = %d (err=%v), want 10", len(list.Tools), err)
+	if err != nil || len(list.Tools) != 12 {
+		t.Fatalf("tools = %d (err=%v), want 12", len(list.Tools), err)
 	}
 }
 
@@ -243,8 +243,8 @@ func TestHTTPWithoutTokenServesMCPClients(t *testing.T) {
 	}
 
 	list, err := cs.ListTools(context.Background(), nil)
-	if err != nil || len(list.Tools) != 10 {
-		t.Fatalf("tools = %d (err=%v), want 10", len(list.Tools), err)
+	if err != nil || len(list.Tools) != 12 {
+		t.Fatalf("tools = %d (err=%v), want 12", len(list.Tools), err)
 	}
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "connection_status", Arguments: map[string]any{}})
 	if err != nil || res.IsError {
@@ -564,8 +564,8 @@ func TestStdioClientSessionAndEveryOutputLineIsJSONRPC(t *testing.T) {
 	}
 
 	list, err := cs.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 10 {
-		t.Fatalf("tools/list = %d tools (err=%v), want 10", len(list.Tools), err)
+	if err != nil || len(list.Tools) != 12 {
+		t.Fatalf("tools/list = %d tools (err=%v), want 12", len(list.Tools), err)
 	}
 	ok, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "connection_status", Arguments: map[string]any{}})
 	if err != nil || ok.IsError {
@@ -636,7 +636,7 @@ func TestStdioRawJSONRPCLinesProduceOnlyJSONRPCOutput(t *testing.T) {
 	list := readResponse()
 	result, _ := list["result"].(map[string]any)
 	toolList, _ := result["tools"].([]any)
-	if list["id"] != float64(2) || len(toolList) != 10 {
+	if list["id"] != float64(2) || len(toolList) != 12 {
 		t.Fatalf("tools/list response = %v", list)
 	}
 	send(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_chats","arguments":{"limit":999}}}`)

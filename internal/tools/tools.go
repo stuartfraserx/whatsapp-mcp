@@ -36,6 +36,8 @@ type Deps struct {
 	Session  *session.Session
 	Policy   *sendpolicy.Policy
 
+	// Now overrides the clock used for edit and revoke windows.
+	Now         func() time.Time
 	SendEnabled bool
 	DataDir     string
 	DownloadDir string
@@ -106,6 +108,8 @@ func Register(s *mcp.Server, d Deps) {
 	}
 	mcp.AddTool(s, sendTool("send_message", "Send message",
 		"Send a text message to one WhatsApp recipient (JID, phone number or exact contact/chat name). "+sendWarning), h.sendMessage)
+	mcp.AddTool(s, sendTool("edit_message", "Edit message", "Edit an own text message within 15 minutes of its original timestamp. Acts on the user's real WhatsApp account and is visible to the other people in the chat. Only use for a message the user explicitly asked to edit."), h.editMessage)
+	mcp.AddTool(s, sendTool("delete_message", "Delete message", "Delete an own message for everyone within 48 hours of its original timestamp. Acts on the user's real WhatsApp account and is visible to the other people in the chat. Only use for a message the user explicitly asked to delete."), h.deleteMessage)
 	mcp.AddTool(s, sendTool("send_file", "Send file",
 		"Send one file from the server's outbox or download directory to one WhatsApp recipient (JID, phone number or exact contact/chat name). "+sendWarning), h.sendFile)
 }

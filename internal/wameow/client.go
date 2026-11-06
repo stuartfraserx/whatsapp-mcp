@@ -531,3 +531,29 @@ func (e *scrubbedError) Unwrap() error { return e.err }
 func scrubbed(op string, err error) error {
 	return &scrubbedError{op: op, err: err}
 }
+
+// EditText implements wa.Client.
+func (c *Client) EditText(ctx context.Context, chatJID, id, text string) (wa.SentMessage, error) {
+	jid, err := c.target(chatJID)
+	if err != nil {
+		return wa.SentMessage{}, err
+	}
+	resp, err := c.cli.SendMessage(ctx, jid, c.cli.BuildEdit(jid, id, &waE2E.Message{Conversation: proto.String(text)}))
+	if err != nil {
+		return wa.SentMessage{}, scrubbed("edit message", sendFailure(err))
+	}
+	return sentMessage(resp, jid), nil
+}
+
+// RevokeMessage implements wa.Client.
+func (c *Client) RevokeMessage(ctx context.Context, chatJID, id string) (wa.SentMessage, error) {
+	jid, err := c.target(chatJID)
+	if err != nil {
+		return wa.SentMessage{}, err
+	}
+	resp, err := c.cli.SendMessage(ctx, jid, c.cli.BuildRevoke(jid, types.EmptyJID, id))
+	if err != nil {
+		return wa.SentMessage{}, scrubbed("revoke message", sendFailure(err))
+	}
+	return sentMessage(resp, jid), nil
+}

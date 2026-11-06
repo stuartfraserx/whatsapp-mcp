@@ -67,6 +67,33 @@ WHATSAPP_MCP_WATCHDOG_GRACE=3600 cycle
 ! grep -Eq 'unhealthy|restart requested|whatsapp_daemon_down' "$tmp/logs/watchdog.log"
 rm "$tmp/bin/sleep"
 health true connected 0
+# First run must ignore historical failures, even for a TERM-eligible daemon.
+rm -f "$tmp/logs/watchdog.state" "$tmp/logs/watchdog.log"
+printf 'listen on 127.0.0.1:19999: address already in use\n' > "$tmp/logs/daemon.log"
+cycle
+[[ ! -f "$tmp/logs/watchdog.log" ]]
+grep -q "^log_offset=$(stat -c '%s' "$tmp/logs/daemon.log")$" "$tmp/logs/watchdog.state"
+# New failures are informational while the daemon checks pass.
+printf 'listen on 127.0.0.1:19999: address already in use\n' >> "$tmp/logs/daemon.log"
+cycle
+grep -q "address already in use (daemon healthy); port owner: pid=$pid cmd=" "$tmp/logs/watchdog.log"
+! grep -Eq 'unhealthy|restart requested|whatsapp_daemon_down|alert' "$tmp/logs/watchdog.log"
+# With a failed listener, report the busy port's owner in the outage.
+cp "$tmp/bin/ss" "$tmp/bin/ss-healthy"
+cat > "$tmp/bin/ss" <<'SS'
+#!/usr/bin/env bash
+[[ "$*" == *':19999' ]] && exec "$(dirname "$0")/ss-healthy"
+exit 0
+SS
+# Skip the destructive restart so the outage details can be inspected.
+sed -i 's/^restarted=0$/restarted=1/' "$tmp/logs/watchdog.state"
+printf 'listen on 127.0.0.1:19999: address already in use\n' >> "$tmp/logs/daemon.log"
+cycle
+grep -q "unhealthy: daemon address is not listening; address already in use; port owner: pid=$pid cmd=" "$tmp/logs/watchdog.log"
+grep -q '"port_owner":"pid=' "$tmp/logs/watchdog.log"
+mv "$tmp/bin/ss-healthy" "$tmp/bin/ss"
+cycle
+rm "$tmp/logs/watchdog.log"
 # Verify preferred-port lookup separately from the published fallback listener.
 cp "$tmp/bin/ss" "$tmp/bin/ss-daemon"
 cat > "$tmp/bin/ss" <<'SS'
@@ -74,7 +101,7 @@ cat > "$tmp/bin/ss" <<'SS'
 printf '%s\n' "$*" >> "$HEALTH_FILE.ss"
 exec "$(dirname "$0")/ss-daemon"
 SS
-printf 'HTTP ports busy; using fallback: address already in use\n' > "$tmp/logs/daemon.log"
+printf 'HTTP ports busy; using fallback: address already in use\n' >> "$tmp/logs/daemon.log"
 WHATSAPP_MCP_HTTP_ADDR=127.0.0.1:19999 cycle
 cycle
 grep -q 'sport = :19999' "$HEALTH_FILE.ss"

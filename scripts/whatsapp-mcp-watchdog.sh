@@ -75,7 +75,7 @@ listener_owner() {
 }
 probe() {
     reason= port_owner= state= paired=false healthy=true
-    local pid= addr= port= sockets= health= failed=0 bytes=0 inode=0 age= young=false new_log= preferred=
+    local pid= addr= port= sockets= health= failed=0 bytes=0 inode=0 age= young=false new_log= preferred= busy_line= busy_owner= health_ok=false
     if [[ -f "$log_dir/daemon.pid" ]]; then IFS= read -r pid < "$log_dir/daemon.pid" || :; fi
     if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" 2>/dev/null; then
         healthy=false; reason+='daemon pid is not alive; '
@@ -108,6 +108,7 @@ probe() {
         state=$(jq -r '.state' <<< "$health")
         paired=$(jq -r '.paired' <<< "$health")
         failed=$(jq -r '.webhook_failed' <<< "$health")
+        health_ok=$(jq -r '.ok' <<< "$health")
         if [[ $(jq -r '.ok' <<< "$health") != true ]]; then
             if $young && { [[ "$state" != connected ]] || [[ "$paired" != true ]]; }; then
                 log "starting: daemon age=${age}s grace=${grace}s state=$state paired=$paired"
@@ -120,8 +121,13 @@ probe() {
     fi
     if [[ -f "$log_dir/daemon.log" ]]; then
         read -r bytes inode < <(stat -c '%s %i' "$log_dir/daemon.log")
-        if (( inode != log_inode || bytes < log_offset )); then log_offset=0; fi
-        new_log=$(tail -c "+$((log_offset+1))" "$log_dir/daemon.log")
+        # With no known inode, establish a baseline without replaying history.
+        if (( log_inode == 0 )); then
+            log_offset=$bytes
+        elif (( inode != log_inode || bytes < log_offset )); then
+            log_offset=0
+        fi
+        new_log=$(tail -c "+$((log_offset+1))" "$log_dir/daemon.log" | head -c "$((bytes-log_offset))")
         if grep -q 'HTTP ports busy; using fallback' <<< "$new_log"; then
             preferred=${WHATSAPP_MCP_HTTP_ADDR:-127.0.0.1:8765}
             port=${preferred##*:}
@@ -131,9 +137,22 @@ probe() {
             fi
             log "preferred port busy; fallback in use: $(listener_owner "$sockets")"
         fi
-        if grep -vi 'HTTP ports busy; using fallback' <<< "$new_log" | grep -qi 'address already in use'; then
-            healthy=false; reason+="address already in use; port owner: $port_owner; "
-        fi
+        while IFS= read -r busy_line; do
+            [[ ${busy_line,,} == *'address already in use'* ]] || continue
+            [[ "$busy_line" == *'HTTP ports busy; using fallback'* ]] && continue
+            busy_owner=${port_owner:-unknown}
+            if [[ "$busy_line" =~ listen\ on\ 127\.0\.0\.1:([0-9]+) ]]; then
+                sockets=$(ss -ltnpH "sport = :${BASH_REMATCH[1]}" 2>/dev/null) || sockets=
+                busy_owner=$(listener_owner "$sockets")
+            fi
+            if $healthy && $health_ok; then
+                log "address already in use (daemon healthy); port owner: $busy_owner"
+            else
+                healthy=false
+                port_owner=$busy_owner
+                reason+="address already in use; port owner: $port_owner; "
+            fi
+        done <<< "$new_log"
         log_offset=$bytes log_inode=$inode
     fi
 }

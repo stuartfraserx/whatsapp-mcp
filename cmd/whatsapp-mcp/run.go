@@ -341,7 +341,11 @@ func (e env) serve(ctx context.Context, args []string) error {
 		}
 		defer ln.Close()
 	}
-	res, err := openResources(ctx, cfg, log, terminalOrNil(e.stderr))
+	terminal := terminalOrNil(e.stderr)
+	if v, _ := e.lookup("WHATSAPP_MCP_LOG_QR"); v == "1" {
+		terminal = e.stderr
+	}
+	res, err := openResources(ctx, cfg, log, terminal)
 	if err != nil {
 		return err
 	}
@@ -379,33 +383,35 @@ func (e env) serve(ctx context.Context, args []string) error {
 
 	switch cfg.Transport {
 	case config.TransportHTTP:
-		tokenFile := cfg.HTTPTokenFile
-		if tokenFile == "" {
-			tokenFile = cfg.HTTPTokenPath()
-			if cfg.HTTPToken != "" {
-				tokenFile = filepath.Join(cfg.DataDir, "daemon-http-token")
-			}
-			if httpToken != "" {
-				if err := datadir.WriteFileAtomic(tokenFile, []byte(httpToken+"\n")); err != nil {
-					ln.Close()
-					return err
+		if config.IsLoopbackHTTPAddr(cfg.HTTPAddr) {
+			tokenFile := cfg.HTTPTokenFile
+			if tokenFile == "" {
+				tokenFile = cfg.HTTPTokenPath()
+				if cfg.HTTPToken != "" {
+					tokenFile = filepath.Join(cfg.DataDir, "daemon-http-token")
+				}
+				if httpToken != "" {
+					if err := datadir.WriteFileAtomic(tokenFile, []byte(httpToken+"\n")); err != nil {
+						ln.Close()
+						return err
+					}
 				}
 			}
-		}
-		tokenFile, _ = filepath.Abs(tokenFile)
-		info := daemon.Info{HTTPAddr: ln.Addr().String(), TokenFile: tokenFile}
-		if cfg.DaemonStartCommand != "" {
-			info.StartCommand = []string{cfg.DaemonStartCommand}
-		}
-		if dir, ok := e.lookup("WHATSAPP_MCP_LOG_DIR"); ok {
-			info.LogPath = filepath.Join(dir, "daemon.log")
-		}
-		if err := daemon.Write(cfg.DataDir, info); err != nil {
-			ln.Close()
-			return err
+			tokenFile, _ = filepath.Abs(tokenFile)
+			info := daemon.Info{HTTPAddr: ln.Addr().String(), TokenFile: tokenFile}
+			if cfg.DaemonStartCommand != "" {
+				info.StartCommand = []string{cfg.DaemonStartCommand}
+			}
+			if dir, ok := e.lookup("WHATSAPP_MCP_LOG_DIR"); ok {
+				info.LogPath = filepath.Join(dir, "daemon.log")
+			}
+			if err := daemon.Write(cfg.DataDir, info); err != nil {
+				ln.Close()
+				return err
+			}
 		}
 		log.Info("listening on http://" + ln.Addr().String() + "/mcp")
-		err = server.Serve(ctx, ln, server.NewHTTPHandler(srv, httpToken))
+		err = server.Serve(ctx, ln, server.NewHTTPHandler(srv, httpToken, func() bool { return string(res.session.Status().State) == "connected" }))
 	default:
 		log.Info("serving MCP on stdio", "version", version)
 		err = server.RunStdio(ctx, srv, io.NopCloser(e.stdin), nopWriteCloser{e.stdout})

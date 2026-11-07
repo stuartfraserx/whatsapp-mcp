@@ -364,3 +364,13 @@ func (s *Session) WaitPaired(ctx context.Context) (accountJID string, err error)
 		return "", errors.New("paired without an account identifier")
 	}
 }
+
+// PairingCode returns a snapshot of the active pairing code for authenticated clients.
+func (s *Session) PairingCode() (string, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.code == "" || !s.clock.Now().Before(s.expiresAt) || s.client.Status().Paired {
+		return "", time.Time{}
+	}
+	return s.code, s.expiresAt
+}

@@ -594,7 +594,7 @@ func TestShowPairingQRWhenPaired(t *testing.T) {
 	}
 }
 
-func TestShowPairingQRWhenUnpairedWritesPNGAndNeverLeaksPayload(t *testing.T) {
+func TestShowPairingQRWhenUnpairedReturnsRemoteCode(t *testing.T) {
 	const payload = "2@PAYLOAD-SECRET-xYz9/abcDEF==,keyMaterial,identityKey"
 	var term bytes.Buffer
 	tests := []struct {
@@ -634,12 +634,18 @@ func TestShowPairingQRWhenUnpairedWritesPNGAndNeverLeaksPayload(t *testing.T) {
 			if got.Instructions == "" {
 				t.Fatal("instructions must tell the user what to do")
 			}
-			full := rawJSON(t, res)
-			for _, frag := range []string{payload, "PAYLOAD-SECRET", "keyMaterial", "identityKey"} {
-				if strings.Contains(full, frag) {
-					t.Fatalf("pairing payload fragment %q leaked in the tool result: %s", frag, full)
-				}
+			var remote struct {
+				Code  string `json:"code"`
+				ASCII string `json:"ascii"`
 			}
+			remote = decode[struct {
+				Code  string `json:"code"`
+				ASCII string `json:"ascii"`
+			}](t, res)
+			if remote.Code != payload || remote.ASCII == "" {
+				t.Fatal("remote pairing requires code and text QR")
+			}
+
 		})
 	}
 }

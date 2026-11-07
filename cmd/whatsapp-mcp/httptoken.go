@@ -20,20 +20,22 @@ const generatedTokenBytes = 32
 
 // resolveHTTPToken returns the bearer token for the HTTP transport: the
 // configured one, else the token persisted in the data dir (created on first
-// use). It returns "" only when auth was disabled explicitly.
+// use on loopback only). HTTP authentication cannot be disabled.
 func resolveHTTPToken(cfg config.Config, log *slog.Logger) (string, error) {
 	if cfg.HTTPToken != "" {
 		return cfg.HTTPToken, nil
 	}
 	if cfg.HTTPNoAuth {
-		log.Warn("HTTP auth disabled; any local process can use this server")
-		return "", nil
+		return "", errors.New("HTTP MCP requires bearer authentication; http-no-auth is no longer supported")
 	}
 	path := cfg.HTTPTokenPath()
 	token, err := readTokenFile(path)
 	switch {
 	case err == nil:
 	case errors.Is(err, os.ErrNotExist):
+		if !config.IsLoopbackHTTPAddr(cfg.HTTPAddr) {
+			return "", errors.New("non-loopback HTTP requires WHATSAPP_MCP_HTTP_TOKEN or a configured token file")
+		}
 		if token, err = generateToken(); err != nil {
 			return "", err
 		}

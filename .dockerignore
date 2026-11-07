@@ -1,0 +1,16 @@
+.git
+**/*.db
+**/*.db-*
+secrets/
+data/
+**/*.env
+.env
+.env.*
+logs/
+**/*.log
+reference/
+
+whatsapp-mcp-data/
+downloads/
+outbox/
+pairing-qr.png

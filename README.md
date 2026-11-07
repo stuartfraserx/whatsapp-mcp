@@ -34,10 +34,10 @@ with mode `0700`. Files inside are created with mode `0600`.
 | `WHATSAPP_MCP_DOWNLOAD_DIR` | `--download-dir` | `<data>/downloads` | Where `download_media` writes files. Must not be the data dir or one of its ancestors. |
 | `WHATSAPP_MCP_OUTBOX_DIR` | `--outbox-dir` | `<data>/outbox` | Only folder (besides the download dir) that `send_file` may read from. Must not be the data dir or one of its ancestors. |
 | `WHATSAPP_MCP_TRANSPORT` | `--transport` | `stdio` | `stdio` or `http`. |
-| `WHATSAPP_MCP_HTTP_ADDR` | `--http-addr` | `127.0.0.1:8765` | Listen address for HTTP mode. The host must be exactly `127.0.0.1`. Any other host is refused. |
+| `WHATSAPP_MCP_HTTP_ADDR` | `--http-addr` | `127.0.0.1:8765` | Listen address for HTTP mode. Non-loopback binds require a configured bearer token. |
 | `WHATSAPP_MCP_HTTP_TOKEN` | none | empty | Bearer token for HTTP mode. Env only, never a flag. When neither a token nor a token file is set, the server uses an auto-generated token (see [HTTP](#http)). |
 | `WHATSAPP_MCP_HTTP_TOKEN_FILE` | none | empty | File containing the bearer token (trimmed). Mutually exclusive with `WHATSAPP_MCP_HTTP_TOKEN`. |
-| `WHATSAPP_MCP_HTTP_NO_AUTH` | `--http-no-auth` | `false` | Disable bearer authentication in HTTP mode. Refused when a token or token file is also set. |
+| `WHATSAPP_MCP_HTTP_NO_AUTH` | `--http-no-auth` | `false` | Deprecated; HTTP mode refuses to start with authentication disabled. |
 | `WHATSAPP_MCP_SEND_ENABLED` | `--send-enabled` | `true` | Set to `false` to remove the send tools entirely. |
 | `WHATSAPP_MCP_ALLOWLIST` | `--allowlist` | empty | Comma-separated JIDs or phone numbers. Empty means any recipient. |
 | `WHATSAPP_MCP_SEND_TIMEOUT` | `--send-timeout` | `25s` | Send deadline including file upload; range `5s`–`120s`. |
@@ -100,7 +100,7 @@ On your phone: **Settings → Linked devices → Link a device**, then scan the 
 - The PNG is deleted automatically once pairing succeeds.
 
 You can also pair from an MCP client. Call the `show_pairing_qr` tool. It returns
-the path to the PNG, never the QR payload. Open that file locally and scan it.
+the PNG path, text QR, and raw pairing code. Scan the text QR or open the PNG locally.
 
 ## Running on a Linux PC
 
@@ -117,7 +117,7 @@ Stdout carries only MCP JSON. Logs go to stderr.
 
 ### HTTP
 
-HTTP mode listens on loopback only.
+HTTP mode defaults to loopback. For remote deployment, see [Deploying on Railway](#deploying-on-railway).
 
 ```sh
 whatsapp-mcp serve --transport http
@@ -128,15 +128,15 @@ path `/mcp`. Clients must send `Authorization: Bearer <token>`.
 
 The token comes from, in order:
 
-1. `WHATSAPP_MCP_HTTP_TOKEN`, or the file named by `WHATSAPP_MCP_HTTP_TOKEN_FILE`.
+1. `WHATSAPP_MCP_HTTP_TOKEN`, taking precedence over `WHATSAPP_MCP_HTTP_TOKEN_FILE`.
+   Otherwise, the file named by `WHATSAPP_MCP_HTTP_TOKEN_FILE`.
 2. `<data>/http-token`, when it exists. It must be a regular file with mode `0600`.
-3. Otherwise the server generates a random 32-byte token (hex), writes it to
+3. On loopback only, otherwise the server generates a random 32-byte token (hex), writes it to
    `<data>/http-token` with mode `0600`, and logs the file path. The token itself
    is never logged. Read it with `cat ~/.local/share/whatsapp-mcp/http-token`.
 
-To run without authentication, set `WHATSAPP_MCP_HTTP_NO_AUTH=true` (or pass
-`--http-no-auth`). The server logs a warning. The combination with a token or
-token file is refused.
+HTTP MCP always requires bearer authentication. `--http-no-auth` is refused.
+Only `GET /healthz` is unauthenticated.
 
 Prefer `WHATSAPP_MCP_HTTP_TOKEN_FILE` for long-running services, and keep that
 file at mode `0600`.
@@ -492,7 +492,7 @@ Omit the `headers` block only when you run with `WHATSAPP_MCP_HTTP_NO_AUTH=true`
 | `send_message` | send | Send a text message. |
 | `send_file` | send | Send a file from the outbox or download directory, with an optional caption. Maximum 64 MiB. |
 | `connection_status` | status | Report connection state, pairing, send settings, rate limits, and the address-book sync state (`contact_sync`, counts only). |
-| `show_pairing_qr` | status | Return the pairing PNG path when unpaired. Never returns the QR payload. |
+| `show_pairing_qr` | status | Return a text QR, raw pairing code, expiry and server PNG path when unpaired. |
 | `resync_contacts` | status | Ask WhatsApp to send the address book (saved contact names) and chat settings to this linked device again, in the background. Sends no message. |
 
 `send_message`, `send_file`, `edit_message` and `delete_message` are registered only when `WHATSAPP_MCP_SEND_ENABLED`
@@ -678,14 +678,14 @@ risk described in the warning above.
   communicate only with the loopback daemon.
 - **Log redaction.** At `info` and above, logs do not contain message bodies,
   full phone numbers, or full JIDs. Phone numbers and JIDs are masked.
-- **HTTP is loopback-only.** The listener binds to `127.0.0.1`. The server also
-  rejects requests with unexpected `Host` headers (DNS-rebinding protection).
-- **Bearer token.** HTTP mode requires a token by default: yours (`WHATSAPP_MCP_HTTP_TOKEN`
-  or `_FILE`) or an auto-generated one in `<data>/http-token`. Tokens are compared
-  in constant time over SHA-256 digests.
-- **`--http-no-auth` means no access control.** With it, any local process
-  that can reach `127.0.0.1:8765` can call the server, and so can any program
-  running as your user. Use it only on a machine where nothing else runs.
+- **HTTP defaults to loopback.** Remote listeners require a configured token.
+  DNS-rebinding protection remains enabled for requests arriving on loopback.
+- **Bearer token.** HTTP mode always requires a token. Environment tokens take
+  precedence over token files; automatic generation is limited to loopback.
+  Tokens are compared in constant time over SHA-256 digests.
+- **Health and pairing.** Only `GET /healthz` is unauthenticated. Pairing tools
+  return sensitive QR codes to authenticated clients. `WHATSAPP_MCP_LOG_QR=1`
+  renders pairing QR blocks to stderr, including without a terminal.
 - **Never commit the data directory.** It holds session keys and message history.
   Keep it outside any git checkout. The repository `.gitignore` covers the usual
   names (`*.db`, `whatsapp-mcp-data/`, `pairing-qr.png`, `downloads/`, `outbox/`),
@@ -840,3 +840,38 @@ per event; failed alerts are not queued. Alerts contain `event`, `reason`,
 `state`, `paired`, `port_owner`, and UTC `ts`; recovery also has `down_since`.
 `WHATSAPP_MCP_HEALTH_CMD` and `WHATSAPP_MCP_WATCHDOG_ONESHOT=1` are test overrides.
 Run `bash scripts/test-watchdog.sh` for isolated fake-process checks.
+
+## Deploying on Railway
+
+Deploy this repository using its Dockerfile and `railway.json`. Attach a small
+persistent volume (for example, 1 GB) at `/data` to retain pairing, messages and
+webhook state across deployments. Use one replica per WhatsApp session.
+
+The image runs as UID/GID 10001 and owns `/data` before mounting. Railway volumes
+mount as root: set `RAILWAY_RUN_UID=0` when using a Railway volume so the process
+can initialize and write the mounted directory. Alternatively, provision the
+volume with ownership 10001:10001 before running as the default non-root user.
+The application enforces private permissions on its data directory.
+
+Configure these variable names in Railway (keep values private):
+
+- `WHATSAPP_MCP_HTTP_TOKEN` (required for the non-loopback Docker listener)
+- `WHATSAPP_MCP_DATA_DIR`
+- `WHATSAPP_MCP_WEBHOOK_CONFIG` (optional path to a private webhook JSON config;
+  provision that file separately on the volume)
+- `PORT`
+- `WHATSAPP_MCP_LOG_QR` (enabled by default in Docker)
+
+Use `http://<service>.railway.internal:<port>/mcp` over Railway private networking,
+with the configured port and an `Authorization: Bearer` header. A public domain
+is optional; use HTTPS and the same bearer authentication if exposing one.
+`GET /healthz` is unauthenticated and returns only `ok` and `connected`; it stays
+healthy while waiting for pairing so deployment can finish.
+
+For initial pairing, scan the QR block in Railway logs, or call
+`show_pairing_qr` through authenticated HTTP MCP. That tool returns a text QR and
+its raw code, which can also be rendered as a QR locally. In WhatsApp, open
+Settings > Linked devices > Link a device. Codes expire; request another when
+needed. Treat pairing codes and logs as sensitive, and disable QR logging after
+pairing if desired. Never commit tokens, webhook credentials, session databases,
+or other secrets.

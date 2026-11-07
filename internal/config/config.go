@@ -155,8 +155,8 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 	outboxDir := fs.String("outbox-dir", envOr(EnvOutboxDir, ""), "directory send_file may read from (default <data-dir>/outbox)")
 	transport := fs.String("transport", envOr(EnvTransport, string(TransportStdio)), "MCP transport: stdio or http")
 	fallback := fs.Int("http-port-fallback", fallbackDefault, "additional HTTP ports to try when busy (0..50)")
-	httpAddr := fs.String("http-addr", envOr(EnvHTTPAddr, defaultHTTPAddr), "HTTP listen address; host must be 127.0.0.1")
-	httpNoAuth := fs.Bool("http-no-auth", noAuthDefault, "disable HTTP bearer authentication (loopback only)")
+	httpAddr := fs.String("http-addr", envOr(EnvHTTPAddr, defaultHTTPAddr), "HTTP listen address (non-loopback requires a bearer token)")
+	httpNoAuth := fs.Bool("http-no-auth", noAuthDefault, "deprecated: HTTP requires bearer authentication")
 	sendEnabled := fs.Bool("send-enabled", sendDefault, "register the send_message, send_file, edit_message and delete_message tools")
 	allowlist := fs.String("allowlist", envOr(EnvAllowlist, ""), "comma-separated JIDs or phone numbers allowed as recipients (empty = any)")
 	sendTimeout := fs.Duration("send-timeout", sendDefaultTimeout, "send deadline (5s..120s)")
@@ -209,7 +209,7 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 	switch cfg.Transport {
 	case TransportStdio:
 	case TransportHTTP:
-		if err := ValidateHTTPAddr(cfg.HTTPAddr); err != nil {
+		if err := ValidateListenHTTPAddr(cfg.HTTPAddr); err != nil {
 			return Config{}, err
 		}
 	default:
@@ -231,6 +231,9 @@ func Load(name string, args []string, lookup func(string) (string, bool), home s
 
 	if cfg.HTTPToken, err = loadToken(env); err != nil {
 		return Config{}, err
+	}
+	if _, configured := env(EnvHTTPToken); configured {
+		cfg.HTTPTokenFile = "" // Discovery must use the effective token, not an overridden file.
 	}
 	if cfg.HTTPNoAuth && cfg.HTTPToken != "" {
 		return Config{}, fmt.Errorf("--http-no-auth (%s) cannot be combined with %s or %s", EnvHTTPNoAuth, EnvHTTPToken, EnvHTTPTokenFil)
@@ -325,8 +328,12 @@ func loadToken(env func(string) (string, bool)) (string, error) {
 	token, hasToken := env(EnvHTTPToken)
 	path, hasFile := env(EnvHTTPTokenFil)
 	switch {
-	case hasToken && hasFile:
-		return "", fmt.Errorf("%s and %s are mutually exclusive", EnvHTTPToken, EnvHTTPTokenFil)
+	case hasToken:
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return "", errors.New(EnvHTTPToken + ": token is blank")
+		}
+		return token, nil
 	case hasFile:
 		b, err := ReadFile(path)
 		if err != nil {
@@ -335,12 +342,6 @@ func loadToken(env func(string) (string, bool)) (string, error) {
 		token = strings.TrimSpace(string(b))
 		if token == "" {
 			return "", errors.New(EnvHTTPTokenFil + ": token file is empty")
-		}
-		return token, nil
-	case hasToken:
-		token = strings.TrimSpace(token)
-		if token == "" {
-			return "", errors.New(EnvHTTPToken + ": token is blank")
 		}
 		return token, nil
 	default:
@@ -370,4 +371,20 @@ func absDirOr(p, def string) (string, error) {
 		return def, nil
 	}
 	return filepath.Abs(p)
+}
+
+// IsLoopbackHTTPAddr reports whether addr uses a literal loopback IP.
+func IsLoopbackHTTPAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	ip := net.ParseIP(host)
+	return err == nil && ip != nil && ip.IsLoopback()
+}
+
+// ValidateListenHTTPAddr accepts literal IPv4/IPv6 bind addresses and numeric ports.
+func ValidateListenHTTPAddr(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) == nil {
+		return errors.New("HTTP address must use a literal IP and numeric port")
+	}
+	return ValidateHTTPAddr(net.JoinHostPort(loopbackHost, port))
 }

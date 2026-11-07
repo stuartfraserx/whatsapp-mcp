@@ -323,7 +323,7 @@ func TestHTTPTransportValidatesAddress(t *testing.T) {
 	if _, err := load(t, nil, "--transport=http"); err != nil {
 		t.Errorf("http transport with the default address: %v", err)
 	}
-	for _, addr := range []string{"0.0.0.0:8765", "localhost:8765", "192.168.1.2:8765", "[::1]:8765", "127.0.0.1", "127.0.0.1:0", ":8765"} {
+	for _, addr := range []string{"localhost:8765", "127.0.0.1", "127.0.0.1:0", ":8765"} {
 		if cfg, err := load(t, nil, "--transport=http", "--http-addr="+addr); err == nil {
 			t.Errorf("http transport accepted address %q: %+v", addr, cfg)
 		}
@@ -481,20 +481,10 @@ func TestTokenFileMissingIsAnError(t *testing.T) {
 	}
 }
 
-func TestTokenAndTokenFileAreMutuallyExclusive(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "http.token")
-	if err := os.WriteFile(path, []byte("from-file"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := load(t, map[string]string{config.EnvHTTPToken: "from-env-secret", config.EnvHTTPTokenFil: path})
-	if err == nil {
-		t.Fatal("setting both a token and a token file must fail")
-	}
-	for _, leak := range []string{"from-env-secret", "from-file"} {
-		if strings.Contains(err.Error(), leak) {
-			t.Errorf("error %q leaks the token value %q", err, leak)
-		}
+func TestEnvironmentTokenPrecedesFile(t *testing.T) {
+	cfg, err := load(t, map[string]string{config.EnvHTTPToken: "test-env-token", config.EnvHTTPTokenFil: filepath.Join(t.TempDir(), "absent")})
+	if err != nil || cfg.HTTPToken != "test-env-token" {
+		t.Fatal("environment token must take precedence without reading file")
 	}
 }
 

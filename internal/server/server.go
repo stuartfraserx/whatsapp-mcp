@@ -1,10 +1,11 @@
-// Package server exposes the MCP server over stdio and loopback HTTP.
+// Package server exposes the MCP server over stdio and authenticated HTTP.
 package server
 
 import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -94,26 +95,35 @@ func RunStdio(ctx context.Context, s *mcp.Server, in io.ReadCloser, out io.Write
 }
 
 // NewHTTPHandler returns the streamable HTTP handler for s, mounted at /mcp
-// (every other path is 404). DNS-rebinding protection stays enabled. When
-// token is non-empty requests must carry "Authorization: Bearer <token>".
-func NewHTTPHandler(s *mcp.Server, token string) http.Handler {
+// with an unauthenticated GET /healthz. All other paths require a nonempty
+// bearer token. DNS-rebinding protection stays enabled.
+func NewHTTPHandler(s *mcp.Server, token string, connected ...func() bool) http.Handler {
 	var h http.Handler = mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return s },
 		&mcp.StreamableHTTPOptions{},
 	)
-	if token != "" {
-		h = bearerAuth(h, token)
-	}
 	mux := http.NewServeMux()
 	mux.Handle(mcpPath, h)
-	return mux
+	authenticated := bearerAuth(mux, token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			online := len(connected) > 0 && connected[0]()
+			_ = json.NewEncoder(w).Encode(struct {
+				OK        bool `json:"ok"`
+				Connected bool `json:"connected"`
+			}{true, online})
+			return
+		}
+		authenticated.ServeHTTP(w, r)
+	})
 }
 
 func bearerAuth(next http.Handler, token string) http.Handler {
 	want := sha256.Sum256([]byte(token))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := sha256.Sum256([]byte(bearerToken(r)))
-		if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
+		if subtle.ConstantTimeCompare(got[:], want[:]) != 1 || token == "" {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -130,17 +140,17 @@ func bearerToken(r *http.Request) string {
 	return strings.TrimSpace(value)
 }
 
-// Listen opens a TCP listener on a validated 127.0.0.1 address. Port 0 is
+// Listen opens a TCP listener on a validated literal IP address. Port 0 is
 // accepted so callers can pick a free port.
 func Listen(addr string) (net.Listener, error) {
 	check := addr
 	if host, port, err := net.SplitHostPort(addr); err == nil && port == "0" {
 		check = net.JoinHostPort(host, "1")
 	}
-	if err := config.ValidateHTTPAddr(check); err != nil {
+	if err := config.ValidateListenHTTPAddr(check); err != nil {
 		return nil, err
 	}
-	ln, err := net.Listen("tcp4", addr)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", addr, err)
 	}
@@ -187,7 +197,7 @@ func ListenFallback(addr string, fallback int, log *slog.Logger) (net.Listener, 
 	if fallback < 0 || fallback > 50 {
 		return nil, errors.New("http port fallback must be 0..50")
 	}
-	if err := config.ValidateHTTPAddr(addr); err != nil {
+	if err := config.ValidateListenHTTPAddr(addr); err != nil {
 		return nil, err
 	}
 	host, port, _ := net.SplitHostPort(addr)

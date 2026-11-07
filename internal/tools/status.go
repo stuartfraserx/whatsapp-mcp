@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/fmflurry/whatsapp-mcp/internal/qr"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -137,6 +139,8 @@ func (h *handlers) connectionStatus(ctx context.Context, _ *mcp.CallToolRequest,
 }
 
 type pairingQROutput struct {
+	Code               string `json:"code,omitempty"`
+	ASCII              string `json:"ascii,omitempty"`
 	Status             string `json:"status" jsonschema:"already_paired or scan_required"`
 	PNGPath            string `json:"png_path,omitempty"`
 	ExpiresAt          string `json:"expires_at,omitempty"`
@@ -160,12 +164,21 @@ func (h *handlers) showPairingQR(ctx context.Context, _ *mcp.CallToolRequest, _ 
 	if err != nil {
 		return nil, pairingQROutput{}, fmt.Errorf("could not start pairing: %w", err)
 	}
+	code, expires := h.Session.PairingCode()
+	if code == "" {
+		return nil, pairingQROutput{}, fmt.Errorf("pairing code expired; call this tool again")
+	}
+	var ascii bytes.Buffer
+	if err := qr.RenderTerminal(&ascii, code); err != nil {
+		return nil, pairingQROutput{}, err
+	}
 	return nil, pairingQROutput{
+		Code: code, ASCII: ascii.String(),
 		Status:             "scan_required",
 		PNGPath:            path,
 		ExpiresAt:          formatTime(expires),
 		RenderedInTerminal: h.Session.QRRendered(),
-		Instructions: "Open the PNG at png_path on the machine running this server, then on your phone open " +
+		Instructions: "Scan the QR in ascii (or render code as a QR), or open png_path on the server. On your phone open " +
 			"WhatsApp > Settings > Linked devices > Link a device and scan it. The code expires at expires_at; " +
 			"call this tool again for a fresh one, and connection_status to confirm pairing.",
 	}, nil

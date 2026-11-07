@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
+	"github.com/fmflurry/whatsapp-mcp/internal/qr"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -451,21 +454,26 @@ func TestServeHTTPExplicitTokenDoesNotCreateTokenFile(t *testing.T) {
 	}
 }
 
-func TestServeHTTPNoAuthWarnsAndAcceptsAnyRequest(t *testing.T) {
-	env, dataDir := baseEnv(t)
-	useClient(t, newTestClient(true))
-
-	r := startHTTPServe(t, env, "--http-no-auth")
-	if got := r.status(t, ""); got == http.StatusUnauthorized {
-		t.Fatal("requests without a token must be accepted when auth is disabled")
+func TestServeHTTPNoAuthRejected(t *testing.T) {
+	env, _ := baseEnv(t)
+	got := runCLI(t, env, "serve", "--transport", "http", "--http-no-auth")
+	if got.code == 0 || !strings.Contains(got.stderr, "requires bearer") {
+		t.Fatal("HTTP must require authentication")
 	}
-	r.stop(t)
+}
 
-	if !strings.Contains(r.stderr.String(), "HTTP auth disabled") {
-		t.Errorf("logs lack the warning:\n%s", r.stderr.String())
+func TestNonLoopbackRequiresTokenWithoutGeneratingFile(t *testing.T) {
+	env, dir := baseEnv(t)
+	rec := useClient(t, newTestClient(false))
+	got := runCLI(t, env, "serve", "--transport", "http", "--http-addr", "0.0.0.0:8080")
+	if got.code == 0 || !strings.Contains(got.stderr, "requires WHATSAPP_MCP_HTTP_TOKEN") {
+		t.Fatal("remote listener must require token")
 	}
-	if _, err := os.Lstat(filepath.Join(dataDir, "http-token")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("token file must not be created, err = %v", err)
+	if rec.calls.Load() != 0 {
+		t.Fatal("must refuse before opening WhatsApp")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "http-token")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("must not generate remote token")
 	}
 }
 
@@ -589,5 +597,30 @@ func TestServeStdioSendFileRefusesDataDirFiles(t *testing.T) {
 	_ = h.session.Close()
 	if code := waitExit(t, h.done); code != 0 {
 		t.Fatalf("exit = %d, stderr:\n%s", code, h.stderr.String())
+	}
+}
+
+func TestServeLogsQRWithoutTerminalWhenEnabled(t *testing.T) {
+	env, _ := baseEnv(t)
+	env[config.EnvHTTPToken] = "test-token"
+	env["WHATSAPP_MCP_LOG_QR"] = "1"
+	tc := newTestClient(false)
+	tc.SetQRCodesOnConnect("2@test-log-qr")
+	useClient(t, tc)
+	r := startHTTPServe(t, env)
+	var expected bytes.Buffer
+	if err := qr.RenderTerminal(&expected, "2@test-log-qr"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(r.stderr.String(), expected.String()) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	r.stop(t)
+	if !strings.Contains(r.stderr.String(), expected.String()) {
+		t.Fatal("QR block missing from non-terminal stderr")
+	}
+	if strings.Contains(r.stderr.String(), "2@test-log-qr") {
+		t.Fatal("raw QR must not be logged")
 	}
 }

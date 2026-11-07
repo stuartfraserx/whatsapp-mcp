@@ -148,15 +148,11 @@ func TestListenRejectsNonLoopbackAndMalformedAddresses(t *testing.T) {
 		name string
 		addr string
 	}{
-		{"wildcard ipv4 with port", "0.0.0.0:8765"},
-		{"wildcard ipv4 with ephemeral port", "0.0.0.0:0"},
-		{"ipv6 loopback", "[::1]:8765"},
-		{"ipv6 loopback ephemeral", "[::1]:0"},
-		{"ipv6 wildcard", "[::]:8765"},
+
 		{"localhost name", "localhost:8765"},
 		{"localhost name ephemeral", "localhost:0"},
 		{"private lan address", "192.168.1.20:8765"},
-		{"other loopback address", "127.0.0.2:8765"},
+
 		{"empty host", ":8765"},
 		{"public address", "8.8.8.8:8765"},
 		{"hostname", "example.com:8765"},
@@ -235,30 +231,30 @@ func TestNewMCPServerAdvertisesIdentityAndTools(t *testing.T) {
 	}
 }
 
-func TestHTTPWithoutTokenServesMCPClients(t *testing.T) {
+func TestHTTPWithoutConfiguredTokenRejectsRequests(t *testing.T) {
 	hs := startHTTP(t, "")
-	cs, err := connectHTTPClient(t, hs.URL, nil)
-	if err != nil {
-		t.Fatalf("initialize without a configured token: %v", err)
-	}
-
-	list, err := cs.ListTools(context.Background(), nil)
-	if err != nil || len(list.Tools) != 12 {
-		t.Fatalf("tools = %d (err=%v), want 12", len(list.Tools), err)
-	}
-	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "connection_status", Arguments: map[string]any{}})
-	if err != nil || res.IsError {
-		t.Fatalf("connection_status over HTTP: err=%v res=%+v", err, res)
+	for _, auth := range []string{"", "Bearer whatever"} {
+		resp, _ := rawPost(t, hs.URL, "", auth, initializeReq)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatal("missing configuration must fail closed")
+		}
 	}
 }
 
-func TestHTTPWithoutTokenIgnoresAnyAuthorizationHeader(t *testing.T) {
-	hs := startHTTP(t, "")
-
-	resp, _ := rawPost(t, hs.URL, "", "Bearer whatever", initializeReq)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
+func TestHealthzUnauthenticated(t *testing.T) {
+	hs := startHTTP(t, testToken)
+	resp, err := http.Get("http://" + hs.Addr + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || strings.TrimSpace(string(body)) != `{"ok":true,"connected":false}` {
+		t.Fatal("unexpected health response")
+	}
+	resp2, _ := rawPost(t, hs.URL, "", "", initializeReq)
+	if resp2.StatusCode != 401 {
+		t.Fatal("MCP must still require bearer")
 	}
 }
 
@@ -346,7 +342,7 @@ func TestHTTPTokenClientWithBearerWorksAndWithoutFails(t *testing.T) {
 }
 
 func TestHTTPOnlyServesMCPPath(t *testing.T) {
-	for _, token := range []string{"", testToken} {
+	for _, token := range []string{testToken} {
 		hs := startHTTP(t, token)
 		auth := ""
 		if token != "" {
@@ -373,7 +369,7 @@ func TestHTTPRejectsNonLocalHostHeader(t *testing.T) {
 		{"private address", "192.168.1.20:8765"},
 		{"loopback lookalike subdomain", "127.0.0.1.evil.example.com"},
 	}
-	for _, token := range []string{"", testToken} {
+	for _, token := range []string{testToken} {
 		hs := startHTTP(t, token)
 		auth := ""
 		if token != "" {
@@ -391,11 +387,11 @@ func TestHTTPRejectsNonLocalHostHeader(t *testing.T) {
 }
 
 func TestHTTPAcceptsLoopbackHostHeaders(t *testing.T) {
-	hs := startHTTP(t, "")
+	hs := startHTTP(t, testToken)
 	_, port, _ := net.SplitHostPort(hs.Addr)
 
 	for _, host := range []string{"127.0.0.1:" + port, "localhost:" + port, "[::1]:" + port} {
-		resp, body := rawPost(t, hs.URL, host, "", initializeReq)
+		resp, body := rawPost(t, hs.URL, host, "Bearer "+testToken, initializeReq)
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Host %q: status = %d, want 200; body: %s", host, resp.StatusCode, body)
 		}
@@ -744,4 +740,43 @@ type failingTransport struct{}
 
 func (*failingTransport) Connect(context.Context) (mcp.Connection, error) {
 	return nil, errors.New("boom")
+}
+
+func TestUnpairedQROverAuthenticatedHTTP(t *testing.T) {
+	deps := newDeps(t)
+	fake := deps.Client.(*watest.Fake)
+	fake.SetStatus(wa.Status{State: wa.StateNeedsQR})
+	fake.SetQRCodesOnConnect("2@test-remote-qr-code")
+	ln, err := server.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(ctx, ln, server.NewHTTPHandler(server.NewMCPServer("test", deps), testToken))
+	}()
+	defer func() { cancel(); <-done }()
+	hc := &http.Client{Transport: bearerTransport{token: testToken, base: http.DefaultTransport}}
+	cs, err := connectHTTPClient(t, "http://"+ln.Addr().String()+"/mcp", hc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "show_pairing_qr"})
+	if err != nil || result.IsError {
+		t.Fatal("remote QR call failed")
+	}
+	raw, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Code  string `json:"code"`
+		ASCII string `json:"ascii"`
+	}
+	if json.Unmarshal(raw, &out) != nil || out.Code != "2@test-remote-qr-code" || out.ASCII == "" {
+		t.Fatal("remote QR output missing")
+	}
 }

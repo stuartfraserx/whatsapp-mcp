@@ -99,7 +99,7 @@ func Register(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "show_pairing_qr",
 		Title:       "Show pairing QR",
-		Description: "Start WhatsApp pairing and write the QR code to a PNG file on the machine running this server. The QR payload is never returned; open the PNG and scan it from WhatsApp > Linked devices.",
+		Description: "Start WhatsApp pairing and return a text QR, raw pairing code, expiry and server PNG path. Treat the pairing code as sensitive. Scan it from WhatsApp > Linked devices.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:           "Show pairing QR",
 			DestructiveHint: ptr(false),

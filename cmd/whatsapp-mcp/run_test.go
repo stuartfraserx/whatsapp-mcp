@@ -99,7 +99,7 @@ func TestConfigErrorsExitWithUsageStatus(t *testing.T) {
 		wantErr string
 	}{
 		{"serve invalid send flag", map[string]string{config.EnvSendEnabled: "maybe"}, []string{"serve"}, config.EnvSendEnabled},
-		{"serve non-loopback http addr", nil, []string{"serve", "--transport", "http", "--http-addr", "0.0.0.0:1"}, "127.0.0.1"},
+		{"serve malformed http addr", nil, []string{"serve", "--transport", "http", "--http-addr", "localhost:1"}, "literal IP"},
 		{"serve blank http token", map[string]string{config.EnvHTTPToken: "   "}, []string{"serve"}, "blank"},
 		{"serve unknown transport", nil, []string{"serve", "--transport", "carrier-pigeon"}, "invalid transport"},
 		{"serve unknown flag", nil, []string{"serve", "--no-such-flag"}, "no-such-flag"},

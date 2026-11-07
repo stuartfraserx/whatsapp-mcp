@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -61,6 +62,10 @@ type Client struct {
 	healing        bool
 	now            func() time.Time
 	healHook       func(context.Context) error
+	disconnectHook func()
+	connectedHook  func() bool
+	rawMu          sync.Mutex
+	rawConns       map[net.Conn]struct{}
 
 	mu            sync.Mutex
 	handler       func(wa.Event)
@@ -128,6 +133,7 @@ func Open(ctx context.Context, sessionDBPath string, log *slog.Logger) (*Client,
 		lifeCtx:    lifeCtx,
 		lifeCancel: lifeCancel,
 	}
+	c.installWSDialer()
 	c.reconnect = newReconnecter(log, c.Connect)
 	c.cli.InitialAutoReconnect = true
 	// Full syncs then report every address-book entry as an events.Contact,
@@ -352,6 +358,7 @@ func (c *Client) setConnected() {
 	c.connecting = false
 	c.loggedOut = false
 	c.keepAliveCount = 0
+	c.lastKeepAlive = time.Time{}
 	c.mu.Unlock()
 }
 

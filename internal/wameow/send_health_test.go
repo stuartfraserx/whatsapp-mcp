@@ -3,6 +3,8 @@ package wameow
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -132,4 +134,56 @@ func TestHardDeadlineWithSlowCancellation(t *testing.T) {
 	}
 	close(release)
 	<-finished
+}
+
+func TestSelfHealForceCloseBeforeDisconnectAndRetry(t *testing.T) {
+	raw, peer := net.Pipe()
+	defer peer.Close()
+	var attempts atomic.Int32
+	done := make(chan struct{})
+	c := &Client{rawConns: map[net.Conn]struct{}{raw: {}}}
+	c.disconnectHook = func() {
+		if _, err := raw.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) {
+			t.Error("raw socket was not closed before Disconnect", err)
+		}
+	}
+	c.healHook = func(context.Context) error {
+		if attempts.Add(1) == 1 {
+			return errors.New("reconnect failed")
+		}
+		return nil
+	}
+	c.connectedHook = func() bool { return attempts.Load() == 2 }
+	c.selfHeal("test")
+	go func() {
+		for {
+			c.mu.Lock()
+			running := c.healing
+			c.mu.Unlock()
+			if !running {
+				close(done)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("heal hung")
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d", attempts.Load())
+	}
+}
+
+func TestConnectedImmediatelyRestoresSendHealth(t *testing.T) {
+	c := &Client{keepAliveCount: 2, lastKeepAlive: time.Now(), connectedHook: func() bool { return true }}
+	if c.HealthyForSend() {
+		t.Fatal("expected stale health")
+	}
+	c.setConnected() // events.Connected calls this before publishing events.
+	if !c.HealthyForSend() || !c.lastKeepAlive.IsZero() || c.keepAliveCount != 0 {
+		t.Fatal("Connected did not restore health immediately")
+	}
 }

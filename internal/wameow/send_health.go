@@ -32,7 +32,7 @@ func (c *Client) HealthyForSend() bool {
 	c.mu.Lock()
 	stale := c.healing || (c.keepAliveCount > 0 && c.clockNow().Sub(c.lastKeepAlive) < 2*time.Minute)
 	c.mu.Unlock()
-	return !stale && c.cli != nil && c.cli.IsConnected() && c.cli.IsLoggedIn()
+	return !stale && c.connectionReady()
 }
 func (c *Client) keepAliveTimeout() {
 	c.mu.Lock()
@@ -70,19 +70,73 @@ func (c *Client) selfHeal(reason string) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-		defer cancel()
-		if c.healHook != nil {
-			_ = c.healHook(ctx)
-			return
-		}
-		c.Disconnect()
-		// Hold opMu across the pairing check and connection to prevent QR recovery.
+		// Keep the connection context alive after success: whatsmeow also uses
+		// it for the socket read pump and keepalive loop.
 		c.opMu.Lock()
 		defer c.opMu.Unlock()
-		if c.cli.Store.ID != nil && ctx.Err() == nil {
-			_ = c.cli.Connect()
+		started := time.Now()
+		var err error
+		for attempt := 1; attempt <= 2 && ctx.Err() == nil; attempt++ {
+			c.mu.Lock()
+			forbidden := c.loggedOut
+			c.mu.Unlock()
+			if c.healHook == nil && (forbidden || c.cli.Store.ID == nil) {
+				err = errors.New("session no longer paired")
+				break
+			}
+			c.forceCloseRaw()
+			if c.disconnectHook != nil {
+				c.disconnectHook()
+			} else if c.cli != nil {
+				c.cli.Disconnect()
+			}
+			attemptCtx, cancel := context.WithCancel(ctx)
+			timerDone := make(chan struct{})
+			timer := time.AfterFunc(15*time.Second, func() {
+				cancel()
+				// Also interrupt handshake writes that may not observe ctx.
+				c.forceCloseRaw()
+				close(timerDone)
+			})
+			if c.healHook != nil {
+				err = c.healHook(attemptCtx)
+			} else {
+				err = c.cli.ConnectContext(attemptCtx)
+			}
+			if err == nil && (c.connectedHook != nil || c.healHook == nil) {
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for !c.connectionReady() && attemptCtx.Err() == nil {
+					select {
+					case <-ticker.C:
+					case <-attemptCtx.Done():
+					}
+				}
+				ticker.Stop()
+				err = attemptCtx.Err()
+			}
+			stopped := timer.Stop()
+			if !stopped {
+				<-timerDone
+			}
+			if err == nil && stopped {
+				if c.log != nil {
+					c.log.Info("whatsapp self-heal ok", "attempt", attempt, "duration", time.Since(started))
+				}
+				return
+			}
+			cancel()
+			if err == nil {
+				err = context.DeadlineExceeded
+			}
+			if c.log != nil {
+				c.log.Warn("whatsapp self-heal attempt failed", "attempt", attempt, "duration", time.Since(started))
+			}
 		}
+		c.forceCloseRaw()
+		if c.log != nil {
+			c.log.Error("whatsapp self-heal failed", "duration", time.Since(started), "error", err)
+		}
+
 	}()
 }
 func (c *Client) send(ctx context.Context, jid types.JID, msg *waE2E.Message) (wa.SentMessage, error) {
@@ -190,4 +244,11 @@ func staleTimeout(err error) bool {
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "timed out") || strings.Contains(text, "timeout") || strings.Contains(text, "deadline exceeded")
+}
+
+func (c *Client) connectionReady() bool {
+	if c.connectedHook != nil {
+		return c.connectedHook()
+	}
+	return c.cli != nil && c.cli.IsConnected() && c.cli.IsLoggedIn()
 }

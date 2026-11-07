@@ -397,6 +397,41 @@ before the next start. Exit restarts use a 2-second backoff doubling to 60 secon
 reset after five minutes of uptime. SIGTERM is forwarded to the child and ends
 the loop. `status` reports the two processes; `stop` terminates both.
 
+### Watchdog and setup on a new machine
+
+1. From the repository root, build and install the binary and both scripts:
+
+   ```sh
+   mkdir -p ~/.local/bin
+   go build -o ~/.local/bin/whatsapp-mcp ./cmd/whatsapp-mcp
+   install -m 755 scripts/whatsapp-mcp-supervise.sh ~/.local/bin/whatsapp-mcp-supervise
+   install -m 755 scripts/whatsapp-mcp-watchdog.sh ~/.local/bin/whatsapp-mcp-watchdog
+   ```
+
+2. Create a private env file outside the checkout, with mode `0600`, using the
+   literal `KEY=VALUE` format described above. Set `WHATSAPP_MCP_DATA_DIR` to a
+   private data directory outside the checkout, `WHATSAPP_MCP_BIN` to the absolute
+   installed binary path, and `WHATSAPP_MCP_HTTP_ADDR` to `127.0.0.1:<chosen-port>`.
+   Set `WHATSAPP_MCP_HTTP_TOKEN_FILE` to an existing private `0600` file containing
+   your bearer token, or omit it to generate `<data-dir>/http-token` automatically.
+   Use absolute paths: `~` and `$HOME` are not expanded inside this file. Export
+   `WHATSAPP_MCP_ENV_FILE` with its path before invoking the supervisor. Optional
+   `WHATSAPP_MCP_WEBHOOK_CONFIG` configures inbound notifications;
+   `WHATSAPP_MCP_ALERT_WEBHOOK_CONFIG` overrides the machine-specific watchdog
+   alert JSON path (see [Supervisor watchdog](#supervisor-watchdog)).
+3. Run `~/.local/bin/whatsapp-mcp pair --data-dir /path/to/private/data` using the
+   same data directory. Scan the QR via **Settings → Linked devices → Link a
+   device** on your phone, and wait for the pairing command to finish.
+4. Run `~/.local/bin/whatsapp-mcp-supervise`, then
+   `~/.local/bin/whatsapp-mcp-supervise status`. The supervisor starts the adjacent
+   watchdog automatically. Install its Linux dependencies (`jq`, `ss`, `flock`,
+   and `curl`) as well as the supervisor dependencies listed above.
+5. Run `bash scripts/test-watchdog.sh` from the repository root for isolated
+   watchdog checks using fake processes and no live webhook requests.
+
+Secrets, webhook JSON, session databases (including sidecar files), and env files
+must never be committed. Keep them outside the checkout.
+
 ## Connect OpenBot
 
 OpenBot reads the generic `mcpServers` format. Field names can change between

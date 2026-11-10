@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && groupadd --gid 10001 whatsapp && useradd --uid 10001 --gid 10001 --no-create-home whatsapp \
     && mkdir /data && chown 10001:10001 /data
 COPY --from=build /out/whatsapp-mcp /usr/local/bin/whatsapp-mcp
+COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 ENV WHATSAPP_MCP_DATA_DIR=/data WHATSAPP_MCP_LOG_QR=1
-VOLUME /data
+# Railway rejects VOLUME; persistence comes from a Railway volume mounted at /data.
 USER 10001:10001
-# exec preserves signal handling; the shell expands Railway's PORT.
-CMD ["/bin/sh", "-c", "exec whatsapp-mcp serve --transport http --http-addr 0.0.0.0:${PORT:-8080}"]
+CMD ["/usr/local/bin/docker-entrypoint.sh"]

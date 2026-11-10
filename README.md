@@ -859,8 +859,17 @@ Configure these variable names in Railway (keep values private):
 - `WHATSAPP_MCP_DATA_DIR`
 - `WHATSAPP_MCP_WEBHOOK_CONFIG` (optional path to a private webhook JSON config;
   provision that file separately on the volume)
+- `WHATSAPP_MCP_WEBHOOK_CONFIG_JSON` (optional secret containing the JSON content
+  of the [webhook config](#inbound-webhook-optional))
 - `PORT`
 - `WHATSAPP_MCP_LOG_QR` (enabled by default in Docker)
+
+When `WHATSAPP_MCP_WEBHOOK_CONFIG_JSON` is non-empty and
+`WHATSAPP_MCP_WEBHOOK_CONFIG` is unset, the Docker entrypoint writes the JSON to
+`$WHATSAPP_MCP_DATA_DIR/secrets/webhook.json` (default `/data/secrets/webhook.json`)
+with mode `0600`, inside a `0700` secrets directory, and sets the config path.
+It never logs the JSON and removes the JSON environment variable before starting
+the server. Set `RAILWAY_RUN_UID=0` when using a Railway volume.
 
 Use `http://<service>.railway.internal:<port>/mcp` over Railway private networking,
 with the configured port and an `Authorization: Bearer` header. A public domain

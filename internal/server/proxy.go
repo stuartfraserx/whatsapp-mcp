@@ -20,6 +20,7 @@ import (
 	"github.com/fmflurry/whatsapp-mcp/internal/config"
 	"github.com/fmflurry/whatsapp-mcp/internal/daemon"
 	"github.com/fmflurry/whatsapp-mcp/internal/securefile"
+	"github.com/fmflurry/whatsapp-mcp/internal/upstream"
 )
 
 var startProxyDaemon = daemon.Start
@@ -39,6 +40,7 @@ func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // Proxy owns an upstream MCP session. The server mirrors upstream tool schemas.
 type Proxy struct {
+	upstream      *upstream.Config
 	discoveryStat os.FileInfo
 	toolsMirrored bool
 	mu            sync.Mutex
@@ -58,6 +60,15 @@ type Proxy struct {
 // NewProxy mirrors the daemon tools, or exposes useful errors while it is down.
 func NewProxy(ctx context.Context, version string, info daemon.Info, tokenFallback, dataDir string) (*mcp.Server, *Proxy) {
 	p := &Proxy{dataDir: dataDir, tokenFallback: tokenFallback, fallback: info, tools: make(map[string]bool)}
+	return newProxy(ctx, version, p)
+}
+
+// NewUpstreamProxy connects directly without daemon discovery or autostart.
+func NewUpstreamProxy(ctx context.Context, version string, cfg upstream.Config) (*mcp.Server, *Proxy) {
+	return newProxy(ctx, version, &Proxy{upstream: &cfg, tools: make(map[string]bool)})
+}
+
+func newProxy(ctx context.Context, version string, p *Proxy) (*mcp.Server, *Proxy) {
 	p.discover()
 	s := mcp.NewServer(&mcp.Implementation{Name: "whatsapp-mcp", Version: version}, nil)
 	p.server = s
@@ -80,6 +91,9 @@ func NewProxy(ctx context.Context, version string, info daemon.Info, tokenFallba
 // discover runs under mu (or during construction). Invalid discovery never falls
 // back to a previously trusted endpoint. Missing discovery retains caller defaults.
 func (p *Proxy) discover() {
+	if p.upstream != nil {
+		return
+	}
 	stat, _ := os.Stat(daemon.Path(p.dataDir))
 	changed := (stat == nil) != (p.discoveryStat == nil)
 	if stat != nil && p.discoveryStat != nil {
@@ -161,7 +175,7 @@ func (p *Proxy) recover(ctx context.Context) (*mcp.ClientSession, error) {
 	if err == nil || ctx.Err() != nil {
 		return cs, err
 	}
-	if p.discoveryErr != nil || len(p.info.StartCommand) == 0 || time.Since(p.lastStart) < 30*time.Second {
+	if p.upstream != nil || p.discoveryErr != nil || len(p.info.StartCommand) == 0 || time.Since(p.lastStart) < 30*time.Second {
 		return nil, err
 	}
 	p.lastStart = time.Now()
@@ -192,24 +206,38 @@ func (p *Proxy) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	if p.session != nil {
 		return p.session, nil
 	}
-	b, err := securefile.Read(p.info.TokenFile, true)
-	if err != nil {
-		return nil, errors.New("daemon token unavailable")
+	var token, endpoint string
+	var err error
+	if p.upstream != nil {
+		token, err = p.upstream.Token()
+		endpoint = p.upstream.URL
+	} else {
+		var b []byte
+		b, err = securefile.Read(p.info.TokenFile, true)
+		if err != nil {
+			return nil, errors.New("daemon token unavailable")
+		}
+		token = strings.TrimSpace(string(b))
+		endpoint = "http://" + p.info.HTTPAddr + "/mcp"
+		if err := config.ValidateHTTPAddr(p.info.HTTPAddr); err != nil {
+			return nil, err
+		}
 	}
-	token := strings.TrimSpace(string(b))
+	if err != nil {
+		return nil, err
+	}
 	if token == "" {
 		return nil, errors.New("daemon token is empty")
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "whatsapp-mcp-proxy", Version: "1"}, nil)
-	// No proxy environment or redirects: credentials stay on validated loopback.
 	transport := newProxyTransport()
 	httpClient := daemonHTTPClient(token, transport)
-	if err := config.ValidateHTTPAddr(p.info.HTTPAddr); err != nil {
-		return nil, err
+	if p.upstream != nil {
+		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("upstream redirects are disabled") }
 	}
 	connectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	cs, err := client.Connect(connectCtx, &mcp.StreamableClientTransport{Endpoint: "http://" + p.info.HTTPAddr + "/mcp", HTTPClient: httpClient, MaxRetries: -1, DisableStandaloneSSE: true}, nil)
+	cs, err := client.Connect(connectCtx, &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: httpClient, MaxRetries: -1, DisableStandaloneSSE: true}, nil)
 	if err != nil {
 		transport.CloseIdleConnections()
 		return nil, err
@@ -242,6 +270,9 @@ func (p *Proxy) unavailable(name string) (*mcp.CallToolResult, error) {
 		v := map[string]any{"state": "daemon_unavailable", "paired": false}
 		b, _ := json.Marshal(v)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}, StructuredContent: v}, nil
+	}
+	if p.upstream != nil {
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "WhatsApp upstream is unavailable"}}}, nil
 	}
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "whatsapp daemon is not running; see " + p.logPath}}}, nil
 }

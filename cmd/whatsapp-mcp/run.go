@@ -29,6 +29,7 @@ import (
 	"github.com/fmflurry/whatsapp-mcp/internal/session"
 	"github.com/fmflurry/whatsapp-mcp/internal/store"
 	"github.com/fmflurry/whatsapp-mcp/internal/tools"
+	"github.com/fmflurry/whatsapp-mcp/internal/upstream"
 	"github.com/fmflurry/whatsapp-mcp/internal/wa"
 	"github.com/fmflurry/whatsapp-mcp/internal/wameow"
 )
@@ -309,6 +310,18 @@ func (e env) serve(ctx context.Context, args []string) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if cfg.Transport == config.TransportStdio {
+		remote, err := upstream.Load(cfg.DataDir, e.lookup)
+		if err != nil {
+			return err
+		}
+		if remote != nil {
+			srv, p := server.NewUpstreamProxy(ctx, version, *remote)
+			defer p.Close()
+			log.Info("serving MCP upstream proxy on stdio")
+			return server.RunStdio(ctx, srv, io.NopCloser(e.stdin), nopWriteCloser{e.stdout})
+		}
+	}
 	lock, lockErr := instance.Acquire(cfg.DataDir)
 	if cfg.Transport == config.TransportStdio {
 		_, discoveryErr := os.Lstat(daemon.Path(cfg.DataDir))

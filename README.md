@@ -884,3 +884,24 @@ Settings > Linked devices > Link a device. Codes expire; request another when
 needed. Treat pairing codes and logs as sensitive, and disable QR logging after
 pairing if desired. Never commit tokens, webhook credentials, session databases,
 or other secrets.
+
+### Remote upstream for stdio clients
+
+Clients can keep launching `whatsapp-mcp serve --transport stdio` with only
+`WHATSAPP_MCP_DATA_DIR` set. Put this private configuration in `<data>/upstream.json`:
+
+```json
+{"url":"https://whatsapp.example.com/mcp","token_file":"/absolute/path/to/upstream-token"}
+```
+
+The token file contains the bearer token. Both files must be regular files without
+symlinks, with permissions `0600` or `0400`. The token path must be absolute.
+Alternatively, set both `WHATSAPP_MCP_UPSTREAM_URL` and
+`WHATSAPP_MCP_UPSTREAM_TOKEN_FILE`; these override the file configuration.
+Invalid or incomplete configuration fails startup.
+
+The stdio proxy connects directly to the upstream, verifies TLS, and sends
+`Authorization: Bearer <token>`. Redirects and environment HTTP proxies are disabled.
+HTTPS is required except for HTTP URLs using literal loopback IP addresses.
+This mode does not take the instance lock, open local WhatsApp databases, or
+read or autostart a local daemon. HTTP serve mode is unaffected.

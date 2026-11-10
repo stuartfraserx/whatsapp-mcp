@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fmflurry/whatsapp-mcp/internal/upstream"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"io"
 	"log/slog"
@@ -453,5 +456,75 @@ func TestProxySendHeaderDeadline(t *testing.T) {
 	defer transport.CloseIdleConnections()
 	if transport.ResponseHeaderTimeout != 90*time.Second {
 		t.Fatalf("header timeout=%v", transport.ResponseHeaderTimeout)
+	}
+}
+
+func TestRemoteProxyTLS(t *testing.T) {
+	dir := t.TempDir()
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("remote-token\n"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	remote := mcp.NewServer(&mcp.Implementation{Name: "remote", Version: "1"}, nil)
+	remote.AddTool(&mcp.Tool{Name: "remote_tool", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "remote result"}}}, nil
+	})
+	var authorized atomic.Int32
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return remote }, nil)
+	listener := watest.NewListener()
+	ts := &httptest.Server{Listener: listener, Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer remote-token" {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		authorized.Add(1)
+		handler.ServeHTTP(w, r)
+	})}}
+	ts.StartTLS()
+	defer ts.Close()
+	roots := x509.NewCertPool()
+	roots.AddCert(ts.Certificate())
+	setTransport := newProxyTransport
+	newProxyTransport = func() *http.Transport {
+		return &http.Transport{DialContext: listener.DialContext, TLSClientConfig: &tls.Config{RootCAs: roots}, ResponseHeaderTimeout: 90 * time.Second}
+	}
+	defer func() { newProxyTransport = setTransport }()
+	oldStart := startProxyDaemon
+	startProxyDaemon = func([]string) error { t.Error("autostart called"); return nil }
+	defer func() { startProxyDaemon = oldStart }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	srv, p := NewUpstreamProxy(ctx, "test", upstream.Config{URL: ts.URL + "/mcp", TokenFile: token})
+	defer p.Close()
+	if !p.Ready() {
+		t.Fatal("TLS upstream failed initialization")
+	}
+	inputR, inputW := io.Pipe()
+	outputR, outputW := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- RunStdio(ctx, srv, inputR, outputW) }()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	cs, err := client.Connect(ctx, &mcp.IOTransport{Reader: outputR, Writer: inputW}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "remote_tool"})
+	if err != nil || result.IsError {
+		t.Fatalf("call: %v %v", result, err)
+	}
+	if result.Content[0].(*mcp.TextContent).Text != "remote result" || authorized.Load() == 0 {
+		t.Fatal("call not forwarded")
+	}
+	cs.Close()
+	cancel()
+	<-done
+	// A default transport must reject this private test certificate.
+	newProxyTransport = func() *http.Transport { return &http.Transport{DialContext: listener.DialContext} }
+	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer verifyCancel()
+	_, untrusted := NewUpstreamProxy(verifyCtx, "test", upstream.Config{URL: ts.URL + "/mcp", TokenFile: token})
+	defer untrusted.Close()
+	if untrusted.Ready() {
+		t.Fatal("untrusted TLS accepted")
 	}
 }

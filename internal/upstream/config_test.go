@@ -101,12 +101,179 @@ func TestUnsafeFiles(t *testing.T) {
 
 func TestMissingAndRelativeToken(t *testing.T) {
 	dir := t.TempDir()
-	lookup := func(string) (string, bool) { return "", false }
+	lookup := func(k string) (string, bool) {
+		if k == "HOME" {
+			return dir, true
+		}
+		return "", false
+	}
 	if c, err := Load(dir, lookup); c != nil || err != nil {
 		t.Fatalf("missing: %v", err)
 	}
 	os.WriteFile(filepath.Join(dir, "upstream.json"), []byte(`{"url":"https://example.com/mcp","token_file":"relative"}`), 0600)
 	if _, err := Load(dir, lookup); err == nil {
 		t.Fatal("relative token accepted")
+	}
+}
+
+func TestGlobalFallbackOrder(t *testing.T) {
+	for _, source := range []string{"env", "data", "explicit", "xdg", "home", "os-home"} {
+		t.Run(source, func(t *testing.T) {
+			dir := t.TempDir()
+			home := filepath.Join(dir, "home")
+			t.Setenv("HOME", home)
+			token := filepath.Join(dir, "token")
+			if err := os.WriteFile(token, []byte("test-token"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			paths := map[string]string{
+				"data":     filepath.Join(dir, "data", "upstream.json"),
+				"explicit": filepath.Join(dir, "custom.json"),
+				"xdg":      filepath.Join(dir, "xdg", "whatsapp-mcp", "upstream.json"),
+				"home":     filepath.Join(home, ".config", "whatsapp-mcp", "upstream.json"),
+			}
+			for name, path := range paths {
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				b, _ := json.Marshal(Config{URL: "https://" + name + ".example/mcp", TokenFile: token})
+				if err := os.WriteFile(path, b, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			values := map[string]string{EnvURL: "https://env.example/mcp", EnvTokenFile: token, EnvConfig: paths["explicit"], "XDG_CONFIG_HOME": filepath.Join(dir, "xdg"), "HOME": home}
+			if source != "env" {
+				delete(values, EnvURL)
+				delete(values, EnvTokenFile)
+			}
+			if source != "env" && source != "data" {
+				if err := os.Remove(paths["data"]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if source == "xdg" || source == "home" || source == "os-home" {
+				delete(values, EnvConfig)
+			}
+			if source == "home" || source == "os-home" {
+				delete(values, "XDG_CONFIG_HOME")
+			}
+			want := source
+			if source == "os-home" {
+				delete(values, "HOME")
+				want = "home"
+			}
+			c, err := Load(filepath.Dir(paths["data"]), func(k string) (string, bool) { v, ok := values[k]; return v, ok })
+			if err != nil || c == nil || c.URL != "https://"+want+".example/mcp" {
+				t.Fatalf("source %s: config %v, error %v", source, c, err)
+			}
+		})
+	}
+}
+
+func TestGlobalFiles(t *testing.T) {
+	for _, source := range []string{"explicit", "xdg", "home"} {
+		for _, kind := range []string{"missing", "0400", "permissions", "symlink", "dangling-symlink", "directory", "json", "url", "token"} {
+			t.Run(source+"/"+kind, func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "whatsapp-mcp", "upstream.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				token := filepath.Join(dir, "token")
+				if err := os.WriteFile(token, []byte("sensitive-token"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				c := Config{URL: "https://example.com/mcp", TokenFile: token}
+				if kind == "url" {
+					c.URL = "sensitive-token"
+				}
+				if kind == "token" {
+					c.TokenFile = "sensitive-token"
+				}
+				b, _ := json.Marshal(c)
+				if kind == "json" {
+					b = []byte("sensitive-token")
+				}
+				if err := os.WriteFile(path, b, 0600); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				switch kind {
+				case "missing":
+					err = os.Remove(path)
+				case "0400":
+					err = os.Chmod(path, 0400)
+				case "permissions":
+					err = os.Chmod(path, 0644)
+				case "symlink", "dangling-symlink":
+					if err = os.Remove(path); err == nil {
+						target := token
+						if kind == "dangling-symlink" {
+							target += "-missing"
+						}
+						err = os.Symlink(target, path)
+					}
+				case "directory":
+					if err = os.Remove(path); err == nil {
+						err = os.Mkdir(path, 0700)
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				values := map[string]string{"HOME": filepath.Join(dir, "unused")}
+				switch source {
+				case "explicit":
+					values[EnvConfig] = path
+				case "xdg":
+					values["XDG_CONFIG_HOME"] = dir
+				case "home":
+					values["HOME"] = dir
+					if err := os.MkdirAll(filepath.Join(dir, ".config"), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Rename(filepath.Dir(path), filepath.Join(dir, ".config", "whatsapp-mcp")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				got, err := Load(filepath.Join(dir, "data"), func(k string) (string, bool) { v, ok := values[k]; return v, ok })
+				if kind == "missing" {
+					if got != nil || err != nil {
+						t.Fatalf("missing: %v, %v", got, err)
+					}
+				} else if kind == "0400" {
+					if got == nil || err != nil {
+						t.Fatalf("private file: %v", err)
+					}
+				} else if err == nil || strings.Contains(err.Error(), "sensitive-token") {
+					t.Fatalf("expected safe validation error, got %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestInvalidDataFileStopsGlobalFallback(t *testing.T) {
+	dir := t.TempDir()
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("test-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	global := filepath.Join(dir, "global.json")
+	b, _ := json.Marshal(Config{URL: "https://example.com/mcp", TokenFile: token})
+	if err := os.WriteFile(global, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "upstream.json"), []byte("sensitive-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(k string) (string, bool) {
+		if k == EnvConfig {
+			return global, true
+		}
+		return "", false
+	}
+	if c, err := Load(dir, lookup); c != nil || err == nil || strings.Contains(err.Error(), "sensitive-token") {
+		t.Fatalf("expected safe error without fallback: %v, %v", c, err)
 	}
 }

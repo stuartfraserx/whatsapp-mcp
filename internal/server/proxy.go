@@ -235,7 +235,11 @@ func (p *Proxy) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	if p.upstream != nil {
 		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("upstream redirects are disabled") }
 	}
-	connectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	connectTimeout := 3 * time.Second
+	if p.upstream != nil {
+		connectTimeout = 10 * time.Second
+	}
+	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	cs, err := client.Connect(connectCtx, &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: httpClient, MaxRetries: -1, DisableStandaloneSSE: true}, nil)
 	if err != nil {

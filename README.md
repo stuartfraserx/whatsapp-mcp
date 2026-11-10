@@ -887,8 +887,18 @@ or other secrets.
 
 ### Remote upstream for stdio clients
 
-Clients can keep launching `whatsapp-mcp serve --transport stdio` with only
-`WHATSAPP_MCP_DATA_DIR` set. Put this private configuration in `<data>/upstream.json`:
+Clients can keep launching `whatsapp-mcp serve --transport stdio`. Discovery checks
+these sources in order:
+
+1. `WHATSAPP_MCP_UPSTREAM_URL` and `WHATSAPP_MCP_UPSTREAM_TOKEN_FILE`.
+2. `<data>/upstream.json`, where `<data>` is the configured data directory.
+3. A global file: `WHATSAPP_MCP_UPSTREAM_CONFIG` when nonempty, otherwise
+   `$XDG_CONFIG_HOME/whatsapp-mcp/upstream.json`, otherwise
+   `$HOME/.config/whatsapp-mcp/upstream.json`. If `HOME` is unavailable, the OS
+   user home directory is used.
+
+The global file lets clients discover the upstream independently of
+`WHATSAPP_MCP_DATA_DIR`. File configuration has this format:
 
 ```json
 {"url":"https://whatsapp.example.com/mcp","token_file":"/absolute/path/to/upstream-token"}
@@ -898,7 +908,8 @@ The token file contains the bearer token. Both files must be regular files witho
 symlinks, with permissions `0600` or `0400`. The token path must be absolute.
 Alternatively, set both `WHATSAPP_MCP_UPSTREAM_URL` and
 `WHATSAPP_MCP_UPSTREAM_TOKEN_FILE`; these override the file configuration.
-Invalid or incomplete configuration fails startup.
+Missing files are skipped. A present but invalid file, or invalid or incomplete
+environment configuration, fails startup without trying a lower-priority source.
 
 The stdio proxy connects directly to the upstream, verifies TLS, and sends
 `Authorization: Bearer <token>`. Redirects and environment HTTP proxies are disabled.

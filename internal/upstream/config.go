@@ -16,27 +16,56 @@ import (
 
 const EnvURL = "WHATSAPP_MCP_UPSTREAM_URL"
 const EnvTokenFile = "WHATSAPP_MCP_UPSTREAM_TOKEN_FILE"
+const EnvConfig = "WHATSAPP_MCP_UPSTREAM_CONFIG"
 
 type Config struct {
 	URL       string `json:"url"`
 	TokenFile string `json:"token_file"`
 }
 
-// Load returns nil only when neither environment nor file configuration exists.
+// Load returns nil only when no environment or file configuration exists.
 func Load(dataDir string, lookup func(string) (string, bool)) (*Config, error) {
 	rawURL, hasURL := lookup(EnvURL)
 	tokenFile, hasToken := lookup(EnvTokenFile)
 	c := &Config{URL: rawURL, TokenFile: tokenFile}
 	if !hasURL && !hasToken {
-		b, err := securefile.Read(filepath.Join(dataDir, "upstream.json"), false)
-		if errors.Is(err, os.ErrNotExist) {
+		found := false
+		for source := 0; source < 2; source++ {
+			path := filepath.Join(dataDir, "upstream.json")
+			if source == 1 {
+				global, _ := lookup(EnvConfig)
+				if global == "" {
+					configHome, _ := lookup("XDG_CONFIG_HOME")
+					if configHome == "" {
+						home, _ := lookup("HOME")
+						if home == "" {
+							var err error
+							home, err = os.UserHomeDir()
+							if err != nil {
+								return nil, errors.New("cannot resolve home directory for upstream configuration")
+							}
+						}
+						configHome = filepath.Join(home, ".config")
+					}
+					global = filepath.Join(configHome, "whatsapp-mcp", "upstream.json")
+				}
+				path = global
+			}
+			b, err := securefile.Read(path, false)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, errors.New("upstream.json must be a readable regular private file (0600 or 0400), without symlinks")
+			}
+			if json.Unmarshal(b, c) != nil {
+				return nil, errors.New("invalid upstream.json JSON")
+			}
+			found = true
+			break
+		}
+		if !found {
 			return nil, nil
-		}
-		if err != nil {
-			return nil, errors.New("upstream.json must be a readable regular private file (0600 or 0400), without symlinks")
-		}
-		if json.Unmarshal(b, c) != nil {
-			return nil, errors.New("invalid upstream.json JSON")
 		}
 	}
 	if err := ValidateURL(c.URL); err != nil {

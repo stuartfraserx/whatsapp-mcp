@@ -19,3 +19,13 @@ func OutgoingMediaType(mime string) MediaType {
 		return MediaDocument
 	}
 }
+
+// StatusMediaType accepts JPEG, PNG and WebP images or video stories.
+// An empty kind means the attachment is unsuitable for a status.
+func StatusMediaType(mime string) MediaType {
+	kind := OutgoingMediaType(mime)
+	if kind == MediaImage || kind == MediaVideo {
+		return kind
+	}
+	return ""
+}

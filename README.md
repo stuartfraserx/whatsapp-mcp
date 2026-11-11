@@ -334,7 +334,7 @@ without QR or pairing. Recovery is single-flight with a 30-second cooldown.
 Connected events and successful sends reset the keepalive counter.
 
 
-Send tools (`send_message`, `send_file`, `edit_message`, `delete_message`) accept
+Send tools (`send_message`, `send_file`, `post_status`, `edit_message`, `delete_message`) accept
 an optional `idempotency_key`. For ten minutes, identical attempts share their
 result and message ID, including concurrent calls and uncertain deliveries.
 Without a client key, the operation, resolved chat JID, text or path, caption,
@@ -490,15 +490,16 @@ Omit the `headers` block only when you run with `WHATSAPP_MCP_HTTP_NO_AUTH=true`
 | `edit_message` | send | Edit an own text message within 15 minutes, visible to everyone in the chat. Requires an explicit user request. |
 | `delete_message` | send | Delete an own message for everyone within 48 hours. Requires an explicit user request. |
 | `send_message` | send | Send a text message. |
+| `post_status` | send | Post one 24-hour WhatsApp story immediately and irreversibly, only on explicit request. Image (JPEG/PNG/WebP) or video from outbox/downloads; optional caption (4096 characters), maximum 64 MiB. Uses WhatsApp status privacy, bypasses the chat allowlist, and shares send rate limits and the 10-minute retry window. No recipient; not profile About text. |
 | `send_file` | send | Send a file from the outbox or download directory, with an optional caption. Maximum 64 MiB. |
 | `connection_status` | status | Report connection state, pairing, send settings, rate limits, and the address-book sync state (`contact_sync`, counts only). |
 | `show_pairing_qr` | status | Return a text QR, raw pairing code, expiry and server PNG path when unpaired. |
 | `resync_contacts` | status | Ask WhatsApp to send the address book (saved contact names) and chat settings to this linked device again, in the background. Sends no message. |
 
-`send_message`, `send_file`, `edit_message` and `delete_message` are registered only when `WHATSAPP_MCP_SEND_ENABLED`
+`send_message`, `send_file`, `post_status`, `edit_message` and `delete_message` are registered only when `WHATSAPP_MCP_SEND_ENABLED`
 is `true`. With sending disabled, the server exposes the read and status tools only.
 
-Both send tools carry this warning in their descriptions:
+`send_message`, `send_file` and `post_status` carry this warning in their descriptions:
 
 > Sends immediately and irreversibly. Only call when the user explicitly asked to send this exact message to this exact recipient.
 

@@ -191,7 +191,13 @@ func (h *handlers) checkPolicy(jid string) (ratelimit.Slot, error) {
 	if st.State != wa.StateConnected {
 		return ratelimit.Slot{}, wa.ErrNotConnected
 	}
-	slot, err := h.Policy.CheckSlot(jid)
+	var slot ratelimit.Slot
+	var err error
+	if jid == "status@broadcast" {
+		slot, err = h.Policy.CheckStatusSlot()
+	} else {
+		slot, err = h.Policy.CheckSlot(jid)
+	}
 	if err != nil {
 		h.Log.Info("send refused by policy", "reason", err.Error())
 		return ratelimit.Slot{}, err

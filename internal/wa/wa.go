@@ -247,6 +247,7 @@ type Client interface {
 	RevokeMessage(ctx context.Context, chatJID, id string) (SentMessage, error)
 	SendText(ctx context.Context, chatJID, text string) (SentMessage, error)
 	SendFile(ctx context.Context, chatJID string, f OutgoingFile) (SentMessage, error)
+	PostStatus(ctx context.Context, f OutgoingFile) (SentMessage, error)
 	DownloadMedia(ctx context.Context, m Media) ([]byte, error)
 	Contacts(ctx context.Context) ([]Contact, error)
 	// ResyncContacts asks WhatsApp for the account's app state (address book,

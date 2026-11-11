@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 
 	"github.com/fmflurry/whatsapp-mcp/internal/wa"
 )
@@ -64,5 +66,69 @@ func TestSendFailureMarksOnlyPreSendErrorsAsNotSent(t *testing.T) {
 		if got != tt.notSent {
 			t.Errorf("%v: ErrNotSent = %v, want %v", tt.err, got, tt.notSent)
 		}
+	}
+}
+
+func TestPostStatusUploadsAndTargetsStatusBroadcast(t *testing.T) {
+	for _, mime := range []string{"image/jpeg", "image/png", "image/webp", "video/mp4"} {
+		t.Run(mime, func(t *testing.T) {
+			file := wa.OutgoingFile{Data: []byte("media"), MimeType: mime, Caption: "story"}
+			var uploadedKind wa.MediaType
+			c := &Client{connectedHook: func() bool { return true }, idHook: func() string { return "story-id" }}
+			c.uploadHook = func(_ context.Context, data []byte, kind wa.MediaType) (uploaded, error) {
+				if string(data) != "media" {
+					t.Errorf("data=%q", data)
+				}
+				uploadedKind = kind
+				return uploaded{URL: "uploaded-url", FileLength: uint64(len(data))}, nil
+			}
+			c.sendHook = func(_ context.Context, to types.JID, msg *waE2E.Message, _ whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error) {
+				if to != types.StatusBroadcastJID {
+					t.Errorf("target=%s", to)
+				}
+				if mime == "video/mp4" {
+					if msg.GetVideoMessage().GetCaption() != "story" || msg.GetVideoMessage().GetMimetype() != mime {
+						t.Error("incorrect video")
+					}
+				} else if msg.GetImageMessage().GetCaption() != "story" || msg.GetImageMessage().GetMimetype() != mime || msg.GetImageMessage().GetURL() != "uploaded-url" {
+					t.Error("incorrect image")
+				}
+				return whatsmeow.SendResponse{ID: "story-id"}, nil
+			}
+			sent, err := c.PostStatus(context.Background(), file)
+			if err != nil || sent.ChatJID != types.StatusBroadcastJID.String() || uploadedKind != wa.StatusMediaType(mime) {
+				t.Fatalf("sent=%+v kind=%s err=%v", sent, uploadedKind, err)
+			}
+		})
+	}
+}
+
+func TestChatSendMethodsRejectStatusBroadcast(t *testing.T) {
+	c := &Client{connectedHook: func() bool { return true }}
+	for _, jid := range []string{"status@broadcast", "123@newsletter"} {
+		_, err := c.SendText(context.Background(), jid, "hello")
+		if !errors.Is(err, wa.ErrNotSent) {
+			t.Fatalf("SendText(%s) err=%v", jid, err)
+		}
+		_, err = c.SendFile(context.Background(), jid, wa.OutgoingFile{Data: []byte("x"), MimeType: "image/png"})
+		if !errors.Is(err, wa.ErrNotSent) {
+			t.Fatalf("SendFile(%s) err=%v", jid, err)
+		}
+	}
+}
+
+func TestPostStatusRejectsUnsupportedMedia(t *testing.T) {
+	for _, mime := range []string{"image/gif", "audio/mpeg", "application/pdf"} {
+		t.Run(mime, func(t *testing.T) {
+			c := &Client{connectedHook: func() bool { return true }}
+			c.uploadHook = func(context.Context, []byte, wa.MediaType) (uploaded, error) {
+				t.Fatal("unsupported status media must not be uploaded")
+				return uploaded{}, nil
+			}
+			_, err := c.PostStatus(context.Background(), wa.OutgoingFile{Data: []byte("media"), MimeType: mime})
+			if !errors.Is(err, wa.ErrNotSent) {
+				t.Fatalf("PostStatus(%s) err=%v, want ErrNotSent", mime, err)
+			}
+		})
 	}
 }

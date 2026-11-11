@@ -434,6 +434,9 @@ func (c *Client) target(chatJID string) (types.JID, error) {
 	if err != nil || jid.User == "" || jid.Server == "" {
 		return types.EmptyJID, fmt.Errorf("%w: %s", wa.ErrNotSent, invalidJIDError)
 	}
+	if jid.Server != types.DefaultUserServer && jid.Server != types.GroupServer && jid.Server != types.HiddenUserServer {
+		return types.EmptyJID, fmt.Errorf("%w: recipient must be a user or group JID", wa.ErrNotSent)
+	}
 	return jid, nil
 }
 
@@ -454,10 +457,25 @@ func (c *Client) SendFile(ctx context.Context, chatJID string, f wa.OutgoingFile
 	if err != nil {
 		return wa.SentMessage{}, err
 	}
+	return c.sendFileTo(ctx, jid, f, wa.OutgoingMediaType(f.MimeType))
+}
+
+// PostStatus posts a story using WhatsApp status privacy recipients.
+func (c *Client) PostStatus(ctx context.Context, f wa.OutgoingFile) (wa.SentMessage, error) {
+	kind := wa.StatusMediaType(f.MimeType)
+	if kind == "" {
+		return wa.SentMessage{}, fmt.Errorf("%w: status requires an image or video", wa.ErrNotSent)
+	}
+	if !c.HealthyForSend() {
+		return wa.SentMessage{}, wa.ErrNotSentStale
+	}
+	return c.sendFileTo(ctx, types.StatusBroadcastJID, f, kind)
+}
+
+func (c *Client) sendFileTo(ctx context.Context, jid types.JID, f wa.OutgoingFile, kind wa.MediaType) (wa.SentMessage, error) {
 	if len(f.Data) == 0 {
 		return wa.SentMessage{}, fmt.Errorf("%w: file is empty", wa.ErrNotSent)
 	}
-	kind := wa.OutgoingMediaType(f.MimeType)
 	sendCtx, cancel := context.WithTimeout(ctx, c.sendTimeout())
 	defer cancel()
 	up, err := c.upload(sendCtx, f.Data, kind)

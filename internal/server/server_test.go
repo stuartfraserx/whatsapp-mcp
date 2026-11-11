@@ -182,7 +182,7 @@ func TestListenAcceptsLoopbackWithEphemeralPort(t *testing.T) {
 
 	addr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok || !addr.IP.Equal(net.IPv4(127, 0, 0, 1)) || addr.Port == 0 {
-		t.Fatalf("bound to %v, want 127.0.0.1 with a real port", ln.Addr())
+		t.Fatalf("bound to %v, want 137.0.0.1 with a real port", ln.Addr())
 	}
 	if ln.Addr().Network() != "tcp" {
 		t.Fatalf("network = %q", ln.Addr().Network())
@@ -226,8 +226,8 @@ func TestNewMCPServerAdvertisesIdentityAndTools(t *testing.T) {
 		t.Fatalf("instructions = %q, want the send safety guidance", instr)
 	}
 	list, err := cs.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 12 {
-		t.Fatalf("tools = %d (err=%v), want 12", len(list.Tools), err)
+	if err != nil || len(list.Tools) != 13 {
+		t.Fatalf("tools = %d (err=%v), want 13", len(list.Tools), err)
 	}
 }
 
@@ -560,8 +560,8 @@ func TestStdioClientSessionAndEveryOutputLineIsJSONRPC(t *testing.T) {
 	}
 
 	list, err := cs.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 12 {
-		t.Fatalf("tools/list = %d tools (err=%v), want 12", len(list.Tools), err)
+	if err != nil || len(list.Tools) != 13 {
+		t.Fatalf("tools/list = %d tools (err=%v), want 13", len(list.Tools), err)
 	}
 	ok, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "connection_status", Arguments: map[string]any{}})
 	if err != nil || ok.IsError {
@@ -632,7 +632,7 @@ func TestStdioRawJSONRPCLinesProduceOnlyJSONRPCOutput(t *testing.T) {
 	list := readResponse()
 	result, _ := list["result"].(map[string]any)
 	toolList, _ := result["tools"].([]any)
-	if list["id"] != float64(2) || len(toolList) != 12 {
+	if list["id"] != float64(2) || len(toolList) != 13 {
 		t.Fatalf("tools/list response = %v", list)
 	}
 	send(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_chats","arguments":{"limit":999}}}`)

@@ -459,3 +459,25 @@ func TestRefundIsNilSafe(t *testing.T) {
 	nilPolicy.Refund(ratelimit.Slot{})
 	(&sendpolicy.Policy{Enabled: true}).Refund(ratelimit.Slot{})
 }
+
+func TestStatusSlotSkipsOnlyChatAllowlist(t *testing.T) {
+	p := &sendpolicy.Policy{Enabled: true, Allowlist: mustParse(t, alice), Limiter: ratelimit.New(time.Second, 10, newClock())}
+	if _, err := p.CheckSlot("status@broadcast"); !errors.Is(err, sendpolicy.ErrNotAllowlisted) {
+		t.Fatalf("chat path err=%v", err)
+	}
+	slot, err := p.CheckStatusSlot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.CheckSlot(alice); !errors.Is(err, sendpolicy.ErrRateLimited) {
+		t.Fatalf("shared rate limit err=%v", err)
+	}
+	p.Refund(slot)
+	if _, err = p.CheckStatusSlot(); err != nil {
+		t.Fatalf("refund err=%v", err)
+	}
+	p.Enabled = false
+	if _, err = p.CheckStatusSlot(); !errors.Is(err, sendpolicy.ErrSendDisabled) {
+		t.Fatalf("disabled err=%v", err)
+	}
+}

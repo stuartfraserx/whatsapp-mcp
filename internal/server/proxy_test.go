@@ -304,7 +304,7 @@ func TestProxyRefreshesFallbackToolsAfterStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 12 {
+	if len(list.Tools) != 13 {
 		t.Fatalf("fallback tools: %d", len(list.Tools))
 	}
 	var calls atomic.Int32

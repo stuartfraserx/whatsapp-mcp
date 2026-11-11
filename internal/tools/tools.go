@@ -117,6 +117,7 @@ func Register(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, sendTool("delete_message", "Delete message", "Delete an own message for everyone within 48 hours of its original timestamp. Acts on the user's real WhatsApp account and is visible to the other people in the chat. Only use for a message the user explicitly asked to delete."), h.deleteMessage)
 	mcp.AddTool(s, sendTool("send_file", "Send file",
 		"Send one file from the server's outbox or download directory to one WhatsApp recipient (JID, phone number or exact contact/chat name). "+sendWarning), h.sendFile)
+	mcp.AddTool(s, sendTool("post_status", "Post status", "Post one WhatsApp Status (24-hour story) with an image or video. Posts immediately and irreversibly; only call when the user explicitly asked to post this status. This is not a chat message or the profile About text. "+sendWarning), h.postStatus)
 }
 
 const sendWarning = "Sends immediately and irreversibly. Only call when the user explicitly asked to send this exact message to this exact recipient."

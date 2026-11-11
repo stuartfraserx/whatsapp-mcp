@@ -331,13 +331,13 @@ func listTools(t *testing.T, e *env) map[string]*mcp.Tool {
 	return byName
 }
 
-func TestListToolsWithSendEnabledExposesAllTwelveTools(t *testing.T) {
+func TestListToolsWithSendEnabledExposesAllThirteenTools(t *testing.T) {
 	e := newEnv(t)
 	got := listTools(t, e)
 
 	want := []string{
 		"list_chats", "search_contacts", "list_messages", "get_message_context", "download_media",
-		"send_message", "send_file", "edit_message", "delete_message", "connection_status", "show_pairing_qr", "resync_contacts",
+		"send_message", "send_file", "post_status", "edit_message", "delete_message", "connection_status", "show_pairing_qr", "resync_contacts",
 	}
 	names := make([]string, 0, len(got))
 	for n := range got {
@@ -357,7 +357,7 @@ func TestListToolsWithSendDisabledOmitsSendTools(t *testing.T) {
 	if len(got) != 8 {
 		t.Fatalf("got %d tools, want 8: %v", len(got), got)
 	}
-	for _, name := range []string{"send_message", "send_file", "edit_message", "delete_message"} {
+	for _, name := range []string{"send_message", "send_file", "post_status", "edit_message", "delete_message"} {
 		if _, present := got[name]; present {
 			t.Errorf("%s must not be registered when sending is disabled", name)
 		}
@@ -372,7 +372,7 @@ func TestListToolsWithSendDisabledOmitsSendTools(t *testing.T) {
 func TestSendToolDescriptionsCarryIrreversibilityWarning(t *testing.T) {
 	got := listTools(t, newEnv(t))
 
-	for _, name := range []string{"send_message", "send_file"} {
+	for _, name := range []string{"send_message", "send_file", "post_status"} {
 		if !strings.Contains(got[name].Description, sendWarning) {
 			t.Errorf("%s description = %q, want it to contain %q", name, got[name].Description, sendWarning)
 		}
@@ -385,7 +385,7 @@ func TestSendToolDescriptionsCarryIrreversibilityWarning(t *testing.T) {
 		}
 	}
 	for name, tl := range got {
-		if name != "send_message" && name != "send_file" && strings.Contains(tl.Description, sendWarning) {
+		if name != "send_message" && name != "send_file" && name != "post_status" && strings.Contains(tl.Description, sendWarning) {
 			t.Errorf("%s must not carry the send warning", name)
 		}
 	}
@@ -414,6 +414,7 @@ func TestEveryInputPropertyIsDocumentedAndRequiredFieldsDeclared(t *testing.T) {
 		"download_media":      {"message_id"},
 		"send_message":        {"recipient", "text"},
 		"send_file":           {"recipient", "path"},
+		"post_status":         {"path"},
 		"edit_message":        {"chat", "message_id", "text"},
 		"delete_message":      {"chat", "message_id"},
 	}

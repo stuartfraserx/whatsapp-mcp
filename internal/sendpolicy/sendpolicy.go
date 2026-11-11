@@ -91,10 +91,20 @@ func (p *Policy) Check(jid string) error {
 // so rejected recipients never use up a slot. The returned slot is the zero
 // value when no limiter is configured.
 func (p *Policy) CheckSlot(jid string) (ratelimit.Slot, error) {
+	return p.checkSlot(jid, false)
+}
+
+// CheckStatusSlot applies send enablement and rate limits without a chat allowlist.
+// WhatsApp status privacy determines the story audience.
+func (p *Policy) CheckStatusSlot() (ratelimit.Slot, error) {
+	return p.checkSlot("status@broadcast", true)
+}
+
+func (p *Policy) checkSlot(jid string, status bool) (ratelimit.Slot, error) {
 	if !p.Enabled {
 		return ratelimit.Slot{}, ErrSendDisabled
 	}
-	if !p.Allowlist.Allows(jid) {
+	if !status && !p.Allowlist.Allows(jid) {
 		return ratelimit.Slot{}, ErrNotAllowlisted
 	}
 	if p.Limiter == nil {

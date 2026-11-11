@@ -275,3 +275,9 @@ func (f *Fake) EditText(_ context.Context, chatJID, id, text string) (wa.SentMes
 func (f *Fake) RevokeMessage(_ context.Context, chatJID, id string) (wa.SentMessage, error) {
 	return f.record(SentRecord{ChatJID: chatJID, MessageID: id, Operation: "revoke"})
 }
+
+// PostStatus records a story separately from chat sends.
+func (f *Fake) PostStatus(_ context.Context, file wa.OutgoingFile) (wa.SentMessage, error) {
+	file.Data = slices.Clone(file.Data)
+	return f.record(SentRecord{Operation: "post_status", ChatJID: "status@broadcast", Text: file.Caption, File: &file})
+}

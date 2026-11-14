@@ -81,6 +81,7 @@ func Register(s *mcp.Server, d Deps) {
 			OpenWorldHint:   ptr(true),
 		},
 	}, h.downloadMedia)
+	mcp.AddTool(s, readOnlyTool("status_views", "List received views of own WhatsApp statuses, with unique viewers. Defaults to the last 48 hours; message_id selects one status regardless of age.", "Status views"), h.statusViews)
 	mcp.AddTool(s, readOnlyTool("connection_status", "Report the WhatsApp connection state, pairing state, send safety settings and address-book sync state (counts only).", "Connection status"), h.connectionStatus)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:  "resync_contacts",

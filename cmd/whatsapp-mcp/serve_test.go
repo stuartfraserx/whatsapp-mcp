@@ -24,7 +24,7 @@ import (
 
 var readTools = []string{
 	"list_chats", "search_contacts", "list_messages", "get_message_context",
-	"download_media", "connection_status", "show_pairing_qr", "resync_contacts",
+	"download_media", "connection_status", "show_pairing_qr", "resync_contacts", "status_views",
 }
 
 var sendTools = []string{"send_message", "send_file", "post_status", "edit_message", "delete_message"}
@@ -114,8 +114,8 @@ func TestServeStdioEndToEnd(t *testing.T) {
 	if got, want := h.toolNames(t), sorted(readTools, sendTools); !slices.Equal(got, want) {
 		t.Fatalf("tools = %v, want %v", got, want)
 	}
-	if len(readTools)+len(sendTools) != 13 {
-		t.Fatalf("test table drifted from the thirteen documented tools")
+	if len(readTools)+len(sendTools) != 14 {
+		t.Fatalf("test table drifted from the fourteen documented tools")
 	}
 
 	res, err := h.session.CallTool(context.Background(), &mcp.CallToolParams{Name: "connection_status"})
@@ -317,8 +317,8 @@ func TestServeHTTPRequiresBearerTokenAndShutsDownOnCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
-	if len(tools.Tools) != 13 {
-		t.Fatalf("got %d tools, want 13", len(tools.Tools))
+	if len(tools.Tools) != 14 {
+		t.Fatalf("got %d tools, want 14", len(tools.Tools))
 	}
 	_ = cs.Close()
 

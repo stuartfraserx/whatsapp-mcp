@@ -272,3 +272,16 @@ var (
 type StreamReplacedEvent struct{}
 
 func (StreamReplacedEvent) isEvent() {}
+
+// StatusView is an inbound view receipt for one of our own statuses.
+type StatusView struct {
+	MessageID   string
+	ViewerJID   string
+	ReceiptType string
+	Timestamp   time.Time
+}
+
+// StatusViewEvent carries received status view receipts.
+type StatusViewEvent struct{ Views []StatusView }
+
+func (StatusViewEvent) isEvent() {}

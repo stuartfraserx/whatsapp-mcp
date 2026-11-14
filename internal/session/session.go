@@ -97,6 +97,12 @@ func (s *Session) QRRendered() bool {
 
 func (s *Session) handle(ev wa.Event) {
 	switch e := ev.(type) {
+	case wa.StatusViewEvent:
+		ctx, cancel := storeContext()
+		defer cancel()
+		if err := s.store.SaveStatusViews(ctx, e.Views); err != nil {
+			s.logStoreError("save_status_views", err)
+		}
 	case wa.MessageEvent:
 		s.saveMessage(e.Message)
 	case wa.HistoryEvent:

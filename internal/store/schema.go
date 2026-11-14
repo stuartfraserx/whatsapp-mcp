@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS chats (
@@ -60,11 +60,18 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("apply schema: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0;
+	if version < 2 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD COLUMN revoked_at INTEGER NOT NULL DEFAULT 0;`); err != nil {
-		return fmt.Errorf("migrate messages to v2: %w", err)
+			return fmt.Errorf("migrate messages to v2: %w", err)
+		}
+	}
+	if version < 3 {
+		if _, err := tx.ExecContext(ctx, schemaV3); err != nil {
+			return fmt.Errorf("migrate status views to v3: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("set schema version: %w", err)
@@ -74,3 +81,15 @@ ALTER TABLE messages ADD COLUMN revoked_at INTEGER NOT NULL DEFAULT 0;`); err !=
 	}
 	return nil
 }
+
+const schemaV3 = `
+CREATE TABLE IF NOT EXISTS status_views (
+ message_id TEXT NOT NULL,
+ viewer_jid TEXT NOT NULL,
+ receipt_type TEXT NOT NULL,
+ ts INTEGER NOT NULL,
+ PRIMARY KEY (message_id, viewer_jid, receipt_type)
+);
+CREATE INDEX IF NOT EXISTS idx_status_views_message ON status_views (message_id);
+CREATE INDEX IF NOT EXISTS idx_status_views_ts ON status_views (ts);
+`

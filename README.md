@@ -492,6 +492,7 @@ Omit the `headers` block only when you run with `WHATSAPP_MCP_HTTP_NO_AUTH=true`
 | `send_message` | send | Send a text message. |
 | `post_status` | send | Post one 24-hour WhatsApp story immediately and irreversibly, only on explicit request. Image (JPEG/PNG/WebP) or video from outbox/downloads; optional caption (4096 characters), maximum 64 MiB. Uses WhatsApp status privacy, bypasses the chat allowlist, and shares send rate limits and the 10-minute retry window. No recipient; not profile About text. |
 | `send_file` | send | Send a file from the outbox or download directory, with an optional caption. Maximum 64 MiB. |
+| `status_views` | read | List own Status posts and unique viewers. Optional `message_id` or RFC3339 `since`; defaults to the last 48 hours. Only views received after this feature is running are stored. |
 | `connection_status` | status | Report connection state, pairing, send settings, rate limits, and the address-book sync state (`contact_sync`, counts only). |
 | `show_pairing_qr` | status | Return a text QR, raw pairing code, expiry and server PNG path when unpaired. |
 | `resync_contacts` | status | Ask WhatsApp to send the address book (saved contact names) and chat settings to this linked device again, in the background. Sends no message. |

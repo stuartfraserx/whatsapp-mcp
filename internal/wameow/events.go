@@ -68,6 +68,8 @@ func (c *Client) ownJID() types.JID {
 
 func (c *Client) handleEvent(raw any) {
 	switch evt := raw.(type) {
+	case *events.Receipt:
+		c.onStatusReceipt(evt)
 	case *events.Message:
 		c.onMessage(evt)
 	case *events.HistorySync:
@@ -114,7 +116,7 @@ func (c *Client) handleEvent(raw any) {
 }
 
 func (c *Client) onMessage(evt *events.Message) {
-	if evt.IsViewOnce || isStatusBroadcast(evt.Info.Chat) {
+	if evt.IsViewOnce || (isStatusBroadcast(evt.Info.Chat) && !evt.Info.IsFromMe) {
 		return
 	}
 	info := evt.Info
@@ -253,4 +255,23 @@ func (c *Client) onLoggedOut(evt *events.LoggedOut) {
 		c.reconnect.mu.Unlock()
 	}
 	c.emit(wa.LoggedOutEvent{Reason: fmt.Sprint(evt.Reason)})
+}
+
+func (c *Client) onStatusReceipt(evt *events.Receipt) {
+	if !isStatusBroadcast(evt.Chat) || (evt.Type != types.ReceiptTypeRead && evt.Type != types.ReceiptTypePlayed) {
+		return
+	}
+	viewer := c.newResolver().pn(evt.Sender, evt.SenderAlt).ToNonAD()
+	if viewer.IsEmpty() || viewer == c.ownJID().ToNonAD() {
+		return
+	}
+	var views []wa.StatusView
+	for _, id := range evt.MessageIDs {
+		if id != "" {
+			views = append(views, wa.StatusView{MessageID: id, ViewerJID: viewer.String(), ReceiptType: string(evt.Type), Timestamp: evt.Timestamp})
+		}
+	}
+	if len(views) > 0 {
+		c.emit(wa.StatusViewEvent{Views: views})
+	}
 }

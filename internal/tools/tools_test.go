@@ -331,13 +331,13 @@ func listTools(t *testing.T, e *env) map[string]*mcp.Tool {
 	return byName
 }
 
-func TestListToolsWithSendEnabledExposesAllThirteenTools(t *testing.T) {
+func TestListToolsWithSendEnabledExposesAllFourteenTools(t *testing.T) {
 	e := newEnv(t)
 	got := listTools(t, e)
 
 	want := []string{
 		"list_chats", "search_contacts", "list_messages", "get_message_context", "download_media",
-		"send_message", "send_file", "post_status", "edit_message", "delete_message", "connection_status", "show_pairing_qr", "resync_contacts",
+		"send_message", "send_file", "post_status", "edit_message", "delete_message", "connection_status", "show_pairing_qr", "resync_contacts", "status_views",
 	}
 	names := make([]string, 0, len(got))
 	for n := range got {
@@ -354,8 +354,8 @@ func TestListToolsWithSendDisabledOmitsSendTools(t *testing.T) {
 	e := newEnv(t, withSendDisabled)
 	got := listTools(t, e)
 
-	if len(got) != 8 {
-		t.Fatalf("got %d tools, want 8: %v", len(got), got)
+	if len(got) != 9 {
+		t.Fatalf("got %d tools, want 9: %v", len(got), got)
 	}
 	for _, name := range []string{"send_message", "send_file", "post_status", "edit_message", "delete_message"} {
 		if _, present := got[name]; present {
@@ -394,7 +394,7 @@ func TestSendToolDescriptionsCarryIrreversibilityWarning(t *testing.T) {
 func TestReadToolsAreAnnotatedReadOnly(t *testing.T) {
 	got := listTools(t, newEnv(t))
 
-	for _, name := range []string{"list_chats", "search_contacts", "list_messages", "get_message_context", "connection_status"} {
+	for _, name := range []string{"list_chats", "search_contacts", "list_messages", "get_message_context", "connection_status", "status_views"} {
 		if a := got[name].Annotations; a == nil || !a.ReadOnlyHint {
 			t.Errorf("%s ReadOnlyHint = false, want true", name)
 		}

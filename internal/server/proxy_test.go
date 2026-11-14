@@ -76,7 +76,7 @@ func TestProxyMirrorsAndForwardsDaemonTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 8 {
+	if len(list.Tools) != 9 {
 		t.Fatalf("mirrored tools %d", len(list.Tools))
 	}
 	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "connection_status"})
@@ -304,7 +304,7 @@ func TestProxyRefreshesFallbackToolsAfterStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 13 {
+	if len(list.Tools) != 14 {
 		t.Fatalf("fallback tools: %d", len(list.Tools))
 	}
 	var calls atomic.Int32

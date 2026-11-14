@@ -77,7 +77,7 @@ func newProxy(ctx context.Context, version string, p *Proxy) (*mcp.Server, *Prox
 	var ts []*mcp.Tool
 	_, _ = p.recover(listCtx)
 	if !p.toolsMirrored {
-		for _, name := range []string{"list_chats", "search_contacts", "list_messages", "get_message_context", "download_media", "send_message", "send_file", "post_status", "edit_message", "delete_message", "connection_status", "show_pairing_qr", "resync_contacts"} {
+		for _, name := range []string{"list_chats", "search_contacts", "list_messages", "get_message_context", "download_media", "send_message", "send_file", "post_status", "edit_message", "delete_message", "connection_status", "show_pairing_qr", "resync_contacts", "status_views"} {
 			ts = append(ts, &mcp.Tool{Name: name, Description: "WhatsApp daemon tool", InputSchema: map[string]any{"type": "object"}})
 		}
 	}

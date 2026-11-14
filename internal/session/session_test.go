@@ -905,3 +905,14 @@ func TestRedeliveryOnlyNotifiesOnInsert(t *testing.T) {
 		t.Fatalf("history redelivery notified: %d", counter.calls)
 	}
 }
+
+func TestStatusViewsPersistWithoutDuplicates(t *testing.T) {
+	e := newEnv(t)
+	event := wa.StatusViewEvent{Views: []wa.StatusView{{MessageID: "status", ViewerJID: userJID, ReceiptType: "read", Timestamp: e.clock.Now()}}}
+	e.fake.Emit(event)
+	e.fake.Emit(event)
+	got, err := e.store.ListStatusViews(context.Background(), store.StatusViewsQuery{MessageID: "status"})
+	if err != nil || len(got) != 1 || len(got[0].Viewers) != 1 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
